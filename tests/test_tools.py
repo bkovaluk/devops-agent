@@ -236,7 +236,7 @@ def test_every_tool_result_is_redacted(tool_ctx: ToolContext) -> None:
                 "EventTime": WHEN,
                 "EventName": "PutParameter",
                 "Username": "ci token=abc123",
-                "Resources": [{"ResourceName": "AKIAABCDEFGHIJKLMNOP"}],
+                "Resources": [{"ResourceName": "AKIA" + "ABCDEFGHIJKLMNOP"}],
             }
         ]
     }

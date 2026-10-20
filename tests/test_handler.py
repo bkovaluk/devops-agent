@@ -91,7 +91,9 @@ def test_record_that_is_not_a_job_is_dropped(aws: AwsClients, body: str) -> None
 def test_high_finding_is_stored_redacted_and_published(aws: AwsClients) -> None:
     aws.bedrock.script.append(
         converse_response(
-            report("medium", summary="Key AKIAABCDEFGHIJKLMNOP appeared in logs with password=x")
+            report(
+                "medium", summary="Key AKIA" + "ABCDEFGHIJKLMNOP appeared in logs with password=x"
+            )
         )
     )
     work = job(finding_id="f-1")

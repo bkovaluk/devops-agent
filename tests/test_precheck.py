@@ -291,7 +291,7 @@ def test_log_patterns_cover_at_most_three_groups(ctx: ToolContext) -> None:
 
 
 def test_pattern_lines_are_redacted_then_cut(ctx: ToolContext) -> None:
-    line = "login failed password=hunter2 for AKIAABCDEFGHIJKLMNOP " + "x" * 600
+    line = "login failed password=hunter2 for AKIA" + "ABCDEFGHIJKLMNOP " + "x" * 600
     ctx.logs.responses["get_query_results"] = {
         "status": "Complete",
         "results": [

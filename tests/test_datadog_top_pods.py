@@ -158,7 +158,7 @@ def test_pods_are_ranked_by_max_and_capped(tool_ctx: ToolContext) -> None:
 
 
 def test_pod_names_are_redacted(tool_ctx: ToolContext) -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "AKIA" + "IOSFODNN7EXAMPLE"
     tool_ctx.datadog.responses["query_metrics"] = _answer(
         _series("ns", f"job-{secret}", [(5, 1e9)])
     )

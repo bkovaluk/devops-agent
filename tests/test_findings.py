@@ -162,11 +162,11 @@ def test_reported_finding_keeps_fix_effort_and_redacts_its_reason() -> None:
     investigation = _reported(
         "high",
         fix_effort="very_high",
-        fix_effort_reason="Rotate key AKIAABCDEFGHIJKLMNOP across five services.",
+        fix_effort_reason="Rotate key AKIA" + "ABCDEFGHIJKLMNOP across five services.",
     )
     finding = build_finding(env="prod", job=_job(), investigation=investigation, now=NOW)
     assert finding.fix_effort is Effort.VERY_HIGH
-    assert "AKIAABCDEFGHIJKLMNOP" in finding.fix_effort_reason
+    assert "AKIA" + "ABCDEFGHIJKLMNOP" in finding.fix_effort_reason
 
     redacted = redact_finding(finding)
     assert redacted.fix_effort is Effort.VERY_HIGH

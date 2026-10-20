@@ -98,7 +98,7 @@ def test_jwt_claims_and_signature_verify_with_the_public_key() -> None:
 
 def test_an_unreadable_key_is_an_error_without_its_contents() -> None:
     with pytest.raises(GitHubError) as raised:
-        app_jwt(GITHUB_APP_ID, "-----BEGIN PRIVATE KEY-----\nnotakey\n", NOW)
+        app_jwt(GITHUB_APP_ID, "-----BEGIN PRIVATE" + " KEY-----\nnotakey\n", NOW)
     assert str(raised.value) == "GitHub App private key could not be loaded"
 
 

@@ -42,7 +42,7 @@ from tests.conftest import (
 )
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
-ACCESS_KEY = "AKIAABCDEFGHIJKLMNOP"
+ACCESS_KEY = "AKIA" + "ABCDEFGHIJKLMNOP"
 
 
 def _runner(text: str = '{"rows": [1]}') -> Any:

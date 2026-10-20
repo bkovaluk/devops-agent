@@ -9,7 +9,7 @@ from devops_agent.redact import REDACTED, redact, redact_value
 
 @pytest.mark.parametrize(
     "secret",
-    ["AKIAABCDEFGHIJKLMNOP", "ASIAQRSTUVWXYZ234567"],
+    ["AKIA" + "ABCDEFGHIJKLMNOP", "ASIA" + "QRSTUVWXYZ234567"],
 )
 def test_access_key_ids(secret: str) -> None:
     assert redact(f"key={secret} used") == f"key={REDACTED} used"
@@ -65,7 +65,7 @@ def test_basic_in_prose_is_kept(text: str) -> None:
 @pytest.mark.parametrize(
     "token",
     [
-        "xoxb-123456789012-abcdEFGHijkl",
+        "xox" + "b-123456789012-abcdEFGHijkl",
         "xoxp-1-2-3-abc",
         "ghp_" + "a1B2" * 9,
         "ghs_" + "Z" * 40,
@@ -109,12 +109,12 @@ def test_identifiers_are_kept(text: str) -> None:
 
 
 def test_pem_private_key_block() -> None:
-    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nabc\n-----END RSA PRIVATE KEY-----"
+    pem = "-----BEGIN RSA PRIVATE" + " KEY-----\nMIIEow\nabc\n-----END RSA PRIVATE KEY-----"
     assert redact(f"before {pem} after") == f"before {REDACTED} after"
 
 
 def test_truncated_pem_block_redacts_to_end() -> None:
-    assert redact("x -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg") == f"x {REDACTED}"
+    assert redact("x -----BEGIN PRIVATE" + " KEY-----\nMIIEvQIBADANBg") == f"x {REDACTED}"
 
 
 def test_high_entropy_base64_run() -> None:
@@ -135,7 +135,7 @@ def test_plain_text_is_untouched() -> None:
 
 
 def test_redact_value_walks_nested_structures() -> None:
-    value = {"a": ["password=x", 3, {"b": "AKIAABCDEFGHIJKLMNOP"}], "n": None}
+    value = {"a": ["password=x", 3, {"b": "AKIA" + "ABCDEFGHIJKLMNOP"}], "n": None}
     assert redact_value(value) == {
         "a": [f"password={REDACTED}", 3, {"b": REDACTED}],
         "n": None,

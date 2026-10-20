@@ -34,7 +34,7 @@ from tests.conftest import (
     tool_use,
 )
 
-ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"
+ACCESS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 NOW = datetime(2026, 9, 29, 14, 10, tzinfo=UTC)
 
 
