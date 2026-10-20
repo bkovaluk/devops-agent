@@ -1,0 +1,45 @@
+{
+  "version": "0",
+  "id": "6a7e8feb-b491-4cf7-a9f1-bf3703467718",
+  "detail-type": "Datadog Alert Notification",
+  "source": "aws.partner/datadog.com/acme-prod-5c1d2e",
+  "account": "111122223333",
+  "time": "2026-10-14T13:12:11Z",
+  "region": "us-east-1",
+  "resources": [],
+  "detail": {
+    "alert_type": "error",
+    "event_type": "query_alert_monitor",
+    "priority": "normal",
+    "source_type_name": "Monitor Alert",
+    "title": "[Triggered on {service:checkout-api-prod}] checkout-api 5xx rate",
+    "date_detected": 1791983531000,
+    "aggreg_key": "4f8d0a3c9b1e2d7f",
+    "tags": [
+      "env:prod",
+      "service:checkout-api-prod",
+      "monitor",
+      "source:ecs"
+    ],
+    "meta": {
+      "monitor": {
+        "id": 1234567,
+        "name": "checkout-api 5xx rate",
+        "type": "query alert",
+        "query": "sum(last_5m):sum:trace.http.request.errors{env:prod,source:ecs} by {service}.as_count() > 50",
+        "message": "5xx rate is high on {{service.name}}. @slack-devops",
+        "tags": ["env:prod", "devops_agent:true", "source:ecs"],
+        "priority": 2
+      },
+      "result": {
+        "result_id": 7281649203817263,
+        "result_ts": 1791983520,
+        "evaluation_ts": 1791983525,
+        "metadata": {"snapshot_url": "https://p.datadoghq.com/snapshot/view/x.png"}
+      },
+      "transition": {"trans_name": "Triggered", "trans_type": "alert"},
+      "states": {"source_state": "OK", "dest_state": "Alert"},
+      "duration": 0
+    }
+  }
+}

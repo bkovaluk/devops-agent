@@ -1,0 +1,18 @@
+# Facts about services the agent cannot observe, added to the context bundle when an alarm
+# touches the service. Copy this file to service_notes.toml (or point SERVICE_NOTES_FILE at
+# your own file) to use it. Each table is one service:
+#   match: lowercase substrings matched against the alarm names and the primary resource key
+#   notes: 1 to 5 short lines
+
+[orders-api]
+match = ["orders-api"]
+notes = [
+    "orders-api runs on Lambda behind API Gateway and writes to the DynamoDB table orders-<env>.",
+    "Its error alarm fires during the nightly 02:00 UTC batch import; a short spike then is expected.",
+]
+
+[acme-reports]
+match = ["acme-reports"]
+notes = [
+    "acme-reports is a weekly Step Functions job that exports to example-bucket; a failed run is retried by hand on Monday.",
+]

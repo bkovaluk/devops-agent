@@ -1,0 +1,62 @@
+{
+  "finding_id": "00000000-0000-4000-8000-000000000000",
+  "snapshot": {
+    "env": "dev",
+    "job": {
+      "finding_id": "00000000-0000-4000-8000-000000000000",
+      "kind": "alarm",
+      "alarms": [
+        {
+          "detail-type": "CloudWatch Alarm State Change",
+          "account": "111122223333",
+          "region": "us-east-1",
+          "time": "2026-09-29T14:05:00Z",
+          "resources": [
+            "arn:aws:cloudwatch:us-east-1:111122223333:alarm:orders-api-errors-dev"
+          ],
+          "detail": {
+            "alarmName": "orders-api-errors-dev",
+            "state": {
+              "value": "ALARM",
+              "reason": "Threshold Crossed: 3 datapoints were greater than 5.0",
+              "timestamp": "2026-09-29T14:05:00.000+0000"
+            }
+          }
+        }
+      ],
+      "alarm_count": 1,
+      "keys": ["AWS/Lambda:FunctionName=orders-api-dev"],
+      "floor": "medium"
+    },
+    "context": "## alarm\n{\"alarm_name\": \"orders-api-errors-dev\", \"namespace\": \"AWS/Lambda\", \"metric_name\": \"Errors\"}\n\n## log_sources\n{\"log_groups\": [\"/aws/lambda/orders-api-dev\"]}\n\n## changes\n{\"events\": [{\"event_name\": \"UpdateFunctionCode20150331v2\", \"time\": \"2026-09-29T14:01:10+00:00\"}]}",
+    "prior": [],
+    "tools": ["get_metric", "query_logs", "recent_changes", "aws_call"],
+    "model_id": "us.anthropic.claude-opus-5-5",
+    "calls": [
+      {
+        "name": "query_logs",
+        "input": {
+          "log_group": "/aws/lambda/orders-api-dev",
+          "query": "filter @message like /Error/ | limit 20"
+        },
+        "status": "success",
+        "output": "{\"rows\": [{\"@timestamp\": \"2026-09-29 14:02:03.000\", \"@message\": \"KeyError: 'customer_id' in handler.py:process_record\"}], \"status\": \"Complete\"}"
+      }
+    ]
+  },
+  "label": {
+    "root_cause": "The 14:01 deploy of orders-api-dev reads customer_id from records that do not carry it, so every invocation raises KeyError in handler.py:process_record.",
+    "key_evidence": [
+      "UpdateFunctionCode at 14:01, errors from 14:02",
+      "KeyError: 'customer_id' in handler.py:process_record"
+    ],
+    "notes": "A finding that blames the deploy without the KeyError is one hop short."
+  },
+  "exclude": [],
+  "finding": {
+    "title": "Example API errors after deploy",
+    "likely_cause": "The 14:01 deploy raises KeyError on records without customer_id.",
+    "status": "closed",
+    "resolution": "confirmed"
+  }
+}

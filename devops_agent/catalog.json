@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "severity": {
+    "default": {
+      "prod": "high",
+      "staging": "medium",
+      "qa": "low",
+      "dev": "low"
+    }
+  },
+  "resources": [
+    {"id": "lambda", "namespaces": ["AWS/Lambda"], "dimensions": ["FunctionName"]},
+    {
+      "id": "ecs",
+      "namespaces": ["AWS/ECS", "ECS/ContainerInsights"],
+      "dimensions": ["ServiceName", "ClusterName"],
+      "key_namespace": "AWS/ECS"
+    },
+    {"id": "eks", "namespaces": ["AWS/EKS", "ContainerInsights"], "dimensions": ["ClusterName"]},
+    {"id": "ec2", "namespaces": ["AWS/EC2"], "dimensions": ["InstanceId"]},
+    {
+      "id": "sagemaker",
+      "namespaces": ["AWS/SageMaker"],
+      "dimensions": ["InferenceComponentName", "EndpointName"]
+    },
+    {"id": "sfn", "namespaces": ["AWS/States"], "dimensions": ["StateMachineArn"]},
+    {"id": "bedrock", "namespaces": ["AWS/Bedrock"], "dimensions": ["ModelId"]},
+    {
+      "id": "rds",
+      "namespaces": ["AWS/RDS", "AWS/DocDB"],
+      "dimensions": ["DBClusterIdentifier", "DBInstanceIdentifier"]
+    },
+    {"id": "dynamodb", "namespaces": ["AWS/DynamoDB"], "dimensions": ["TableName"]},
+    {"id": "opensearch", "namespaces": ["AWS/ES", "AWS/OpenSearch"], "dimensions": ["DomainName"]},
+    {
+      "id": "elasticache",
+      "namespaces": ["AWS/ElastiCache"],
+      "dimensions": ["CacheName", "ReplicationGroupId", "CacheClusterId"]
+    },
+    {"id": "sqs", "namespaces": ["AWS/SQS"], "dimensions": ["QueueName"]},
+    {"id": "kinesis", "namespaces": ["AWS/Kinesis"], "dimensions": ["StreamName"]},
+    {"id": "msk", "namespaces": ["AWS/Kafka"], "dimensions": ["Cluster Name"]},
+    {
+      "id": "alb",
+      "namespaces": ["AWS/ApplicationELB"],
+      "dimensions": ["LoadBalancer", "TargetGroup"]
+    },
+    {"id": "nlb", "namespaces": ["AWS/NetworkELB"], "dimensions": ["LoadBalancer", "TargetGroup"]},
+    {"id": "apigateway", "namespaces": ["AWS/ApiGateway"], "dimensions": ["ApiId", "ApiName"]},
+    {"id": "transfer", "namespaces": ["AWS/Transfer"], "dimensions": ["ServerId"]}
+  ],
+  "agent": {
+    "exclude_alarm_prefixes": ["TargetTracking-", "devops-agent"],
+    "opt_out_tag": {"key": "DevOpsAgent", "value": "off"},
+    "notify": ["critical", "high"],
+    "datadog_monitor_tags": ["devops_agent:true"]
+  }
+}
