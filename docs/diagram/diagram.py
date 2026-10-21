@@ -163,3 +163,36 @@ def write_both(draw, outdir, stem="architecture"):
     for name, theme in THEMES.items():
         with open(os.path.join(outdir, f"{stem}-{name}.svg"), "w") as f:
             f.write(draw(theme) + "\n")
+
+
+# Flowchart shapes. A step is a numbered action, a decision a question the flow branches
+# on, an outcome what a branch produces.
+STEP_W, STEP_H = 480, 58
+
+
+def step(cx, cy, n, title, sub, t, w=STEP_W):
+    x, y = cx - w / 2, cy - STEP_H / 2
+    return (
+        f'<rect x="{x}" y="{y}" width="{w}" height="{STEP_H}" rx="10" fill="{t["panel"]}" stroke="{t["border"]}" stroke-width="1.2"/>'
+        + text(
+            x + 18, cy - 4, str(n), t, size=12, fill="dim", weight=600, family=MONO, anchor="start"
+        )
+        + text(x + 42, cy - 4, title, t, size=13.5, weight=650, anchor="start")
+        + text(x + 42, cy + 14, sub, t, size=10.5, fill="muted", family=MONO, anchor="start")
+    )
+
+
+def decision(cx, cy, question, t, w=STEP_W):
+    x, y = cx - w / 2, cy - 21
+    return (
+        f'<rect x="{x}" y="{y}" width="{w}" height="42" rx="21" fill="{t["lane"]}" stroke="{t["region"]}" stroke-width="1.3"/>'
+        + text(cx, cy + 4.5, question, t, size=12.5, weight=600)
+    )
+
+
+def outcome(x, cy, label, cat, t):
+    w = len(label) * 6.7 + 26
+    return (
+        f'<rect x="{x}" y="{cy - 14}" width="{w}" height="28" rx="14" fill="{CAT[cat]}" opacity="0.92"/>'
+        + text(x + w / 2, cy + 4.5, label, t, size=11.5, fill="#ffffff", weight=600, family=MONO)
+    )

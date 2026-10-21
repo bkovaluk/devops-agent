@@ -21,3 +21,4 @@ lint:
 diagram:
     uv run python docs/diagram/architecture.py docs
     uv run python docs/diagram/multi_account.py docs
+    uv run python docs/diagram/flows.py docs
