@@ -93,9 +93,9 @@ member accounts, with a provider alias per account.
 | `account_hourly_budget` | `number` | `null` | `ACCOUNT_HOURLY_BUDGET`; null keeps the code default |
 | `account_daily_budget` | `number` | `null` | `ACCOUNT_DAILY_BUDGET`; null keeps the code default |
 | `member_role_name` | `string` | `null` | `MEMBER_ROLE_NAME` on both functions and `sts:AssumeRole` on that role in member accounts; null reads this account only |
-| `member_external_id` | `string` | `null` | `MEMBER_EXTERNAL_ID` on both functions; the member roles require it |
-| `allowed_account_ids` | `list(string)` | `[]` | `ALLOWED_ACCOUNT_IDS` on both functions, and the only accounts whose member role may be assumed; empty allows every account. List this account too to investigate its own alarms |
-| `organization_id` | `string` | `null` | creates the central event bus, accepting events from this organization only, and its rule to the alarms queue |
+| `member_external_id` | `string` (sensitive) | `null` | `MEMBER_EXTERNAL_ID` on both functions; set it, and the member roles require it |
+| `allowed_account_ids` | `list(string)` | `[]` | `ALLOWED_ACCOUNT_IDS` on both functions, and the only accounts whose member role may be assumed. Recommended. Empty refuses no signal by account, and the role may assume `member_role_name` in any account of `organization_id`, or in any account at all without it. List this account too to investigate its own alarms |
+| `organization_id` | `string` | `null` | creates the central event bus, accepting events from this organization only, and its rule to the alarms queue; with `member_role_name`, limits `sts:AssumeRole` to roles in accounts of this organization (`aws:ResourceOrgID`) |
 | `extra_environment` | `map(string)` | `{}` | any other variable from the README's Configuration tables, set on both functions; the module's own variables take precedence |
 | `log_retention_days` | `number` | `400` | retention of both log groups |
 | `alarm_actions` | `list(string)` | `[]` | actions for the dead-letter, backlog and token alarms; its SNS topics also get the budget's notifications |
@@ -136,6 +136,11 @@ secret store (for example a `TF_VAR_` variable set by CI) rather than committing
 The role is also denied `lambda:GetFunction` and `lambda:GetFunctionConfiguration`, so
 the agent cannot read them back.
 
+`member_external_id` is handled the same way: the variable is sensitive, but the value
+sits in the state and reaches both functions as the plaintext environment variable
+`MEMBER_EXTERNAL_ID`. Reading it from a secret store at run time instead is possible
+later; the module does not do it.
+
 Lambda caps a function's environment at 4 KB in total. A GitHub App private key takes
 about 1.7 KB of it, which leaves room for `prompt_notes` of roughly 2 KB.
 
@@ -167,9 +172,21 @@ document's shape is in the repo README's Catalog section.
 
 ## Many accounts
 
-Set `organization_id`, `member_role_name`, `member_external_id` and optionally
+Set `organization_id`, `member_role_name`, `member_external_id` and
 `allowed_account_ids` on this module in the tooling account, then deploy
-[`member/`](member) in every member account, in the same region:
+[`member/`](member) in every member account, in the same region. Each setting narrows
+which roles the agent's role may assume:
+
+- `allowed_account_ids` (recommended) names the accounts: the grant lists their member
+  role ARNs, and triage refuses every other account's signals. Left empty, the grant is
+  `member_role_name` in any account.
+- `organization_id` adds the organization boundary: the grant requires, and a deny
+  enforces, `aws:ResourceOrgID` equal to it, so even an empty `allowed_account_ids`
+  reaches only accounts of the organization. Without it and without
+  `allowed_account_ids`, any account that creates a role named `member_role_name`
+  trusting the agent's role can be assumed.
+- `member_external_id` (recommended), with the member module's `external_id` equal to it,
+  makes each member role trust the agent's role only when it sends that id.
 
 ```hcl
 module "devops_agent_member" {
@@ -189,7 +206,7 @@ module "devops_agent_member" {
 | `investigator_role_arn` | `string` | required | the agent module's `role_arn`; the only principal the read-only role trusts |
 | `central_event_bus_arn` | `string` | required | the agent module's `central_event_bus_arn` |
 | `role_name` | `string` | `"devops-agent-read"` | the read-only role's name; must equal `member_role_name` |
-| `external_id` | `string` | `null` | the external id the role requires; must equal `member_external_id` |
+| `external_id` | `string` (sensitive) | `null` | the external id the role requires; must equal `member_external_id`. Recommended; null trusts the agent's role without one |
 | `name_prefix` | `string` | `"devops-agent"` | the forwarding rule and its role, and an excluded alarm name prefix; must equal the agent's `name_prefix` |
 | `catalog_json` | `string` | `null` | the agent's catalog, when it sets its own excluded alarm prefixes |
 | `tags` | `map(string)` | `{}` | tags on every resource |

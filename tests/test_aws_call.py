@@ -422,6 +422,29 @@ def test_guard_allows_metadata_reads(service: str, operation: str) -> None:
     assert aws_guard.check(service, operation) is None
 
 
+@pytest.mark.parametrize(
+    ("service", "operation", "reason"),
+    [
+        ("xray", "BatchGetTraces", aws_guard.TRACES),
+        ("wafv2", "GetSampledRequests", aws_guard.SAMPLED_REQUESTS),
+        ("waf", "GetSampledRequests", aws_guard.NOT_COVERED),
+        ("waf-regional", "GetSampledRequests", aws_guard.NOT_COVERED),
+        ("athena", "GetQueryResults", aws_guard.NOT_COVERED),
+        ("codecommit", "GetBlob", aws_guard.NOT_COVERED),
+    ],
+)
+def test_guard_refuses_traces_sampled_requests_and_uncovered_data_reads(
+    service: str, operation: str, reason: str
+) -> None:
+    assert aws_guard.check(service, operation) == reason
+    assert tools._aws_refusal(service, xform_name(operation)) == reason
+
+
+def test_guard_still_allows_trace_and_firewall_metadata() -> None:
+    assert aws_guard.check("xray", "GetServiceGraph") is None
+    assert aws_guard.check("wafv2", "GetWebACL") is None
+
+
 # Call descriptors
 
 

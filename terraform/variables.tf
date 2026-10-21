@@ -210,13 +210,14 @@ variable "member_role_name" {
 }
 
 variable "member_external_id" {
-  description = "External id the agent sends when it assumes a member role (MEMBER_EXTERNAL_ID); the member roles' trust policies require it."
+  description = "External id the agent sends when it assumes a member role (MEMBER_EXTERNAL_ID); set it, and the member module's external_id to the same value, so the member roles' trust policies require it. It reaches both functions as a plaintext environment variable."
   type        = string
   default     = null
+  sensitive   = true
 }
 
 variable "allowed_account_ids" {
-  description = "Accounts the agent investigates (ALLOWED_ACCOUNT_IDS); signals from any other are refused, and the role may assume member roles in these only. Empty allows every account of the organization. List this account too when its own alarms are to be investigated."
+  description = "Accounts the agent investigates (ALLOWED_ACCOUNT_IDS); signals from any other are refused, and the role may assume member roles in these only. Recommended. Empty refuses no signal by account and lets the role assume the member role name in any account: with organization_id set, any account of that organization; without it, any account at all. List this account too when its own alarms are to be investigated."
   type        = list(string)
   default     = []
 
@@ -227,7 +228,7 @@ variable "allowed_account_ids" {
 }
 
 variable "organization_id" {
-  description = "AWS Organization id (o-...). When set, the module creates the central event bus member accounts forward their alarms to, accepting events from this organization only."
+  description = "AWS Organization id (o-...). When set, the module creates the central event bus member accounts forward their alarms to, accepting events from this organization only, and the role may assume member roles only in accounts of this organization (aws:ResourceOrgID)."
   type        = string
   default     = null
 

@@ -30,9 +30,10 @@ variable "role_name" {
 }
 
 variable "external_id" {
-  description = "External id the read-only role requires (the agent module's member_external_id). Null trusts the investigator's role without one."
+  description = "External id the read-only role requires (the agent module's member_external_id). Recommended; null trusts the investigator's role without one."
   type        = string
   default     = null
+  sensitive   = true
 }
 
 variable "name_prefix" {

@@ -28,6 +28,12 @@ _KEY_VALUE = re.compile(
     r"(?:(?P<open>[\"'])(?:(?!(?P=open))[^\n])*(?P<close>(?P=open))?"
     r"|(?!(?i:bearer|basic)\s)[^\s\"',;&}]+)"
 )
+# A Cookie or Set-Cookie header carries session tokens among its pairs, so its whole
+# value goes: to the closing quote when quoted, else to the end of the line or string.
+_COOKIE_HEADER = re.compile(
+    r"(?i)\b(?P<key>(?:set-)?cookie)(?P<sep>[\"']?\s*[=:]\s*)"
+    r"(?:(?P<open>[\"'])(?:(?!(?P=open))[^\n])*(?P<close>(?P=open))?|[^\r\n\"]+)"
+)
 _PREFIXED_TOKEN = re.compile(
     r"\b(?:xox[abprs]-[A-Za-z0-9-]+|gh[pousr]_[A-Za-z0-9]{36,}|sk-[A-Za-z0-9_-]{20,})"
 )
@@ -76,6 +82,7 @@ def redact(text: str) -> str:
     text = _URL_USERINFO.sub(rf"\g<1>{REDACTED}@", text)
     text = _PREFIXED_TOKEN.sub(REDACTED, text)
     text = _AUTH_SCHEME.sub(rf"\g<1>{REDACTED}", text)
+    text = _COOKIE_HEADER.sub(_redact_key_value, text)
     text = _KEY_VALUE.sub(_redact_key_value, text)
     text = _HEX_KEY.sub(REDACTED, text)
     return _BASE64_RUN.sub(_redact_base64, text)

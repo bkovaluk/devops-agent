@@ -20,3 +20,9 @@ variable "assumable_role_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "assumable_role_org_id" {
+  description = "The organization (o-...) every assumable role's account must belong to; null sets no organization boundary."
+  type        = string
+  default     = null
+}

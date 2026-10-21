@@ -88,6 +88,8 @@ CONSOLE_OUTPUT = "returns console output"
 PAYLOADS = "reads payload data"
 CODE = "returns code"
 CONFIGURATION = "returns configuration contents"
+TRACES = "returns traces with request data"
+SAMPLED_REQUESTS = "returns sampled web requests with their headers"
 KEY_MATERIAL = "key material or cryptographic operation"
 NOT_READ = "not a read operation"
 
@@ -166,6 +168,8 @@ BLOCKED_OPERATIONS: dict[str, str] = {
     "ecr:GetAuthorizationToken": CREDENTIALS,
     "ecr:GetDownloadUrlForLayer": OBJECT_CONTENTS,
     "ecr:BatchGetImage": OBJECT_CONTENTS,
+    "xray:BatchGetTraces": TRACES,
+    "wafv2:GetSampledRequests": SAMPLED_REQUESTS,
 }
 
 # Services where only operations with these prefixes are allowed.

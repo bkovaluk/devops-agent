@@ -170,6 +170,25 @@ data "aws_iam_policy_document" "deny" {
     not_resources = length(var.assumable_role_arns) == 0 ? null : var.assumable_role_arns
   }
 
+  # And only in the organization's accounts: a role whose account is outside it, or in no
+  # organization at all (the key is then absent, which StringNotEquals matches), is denied.
+  dynamic "statement" {
+    for_each = var.assumable_role_org_id == null ? [] : [var.assumable_role_org_id]
+
+    content {
+      sid       = "DenyAssumingRolesOutsideOrganization"
+      effect    = "Deny"
+      actions   = ["sts:AssumeRole"]
+      resources = ["*"]
+
+      condition {
+        test     = "StringNotEquals"
+        variable = "aws:ResourceOrgID"
+        values   = [statement.value]
+      }
+    }
+  }
+
   # Parameters can hold credentials. The one the agent may read is its catalog.
   statement {
     sid    = "DenySsmReadsExceptCatalog"
@@ -184,9 +203,10 @@ data "aws_iam_policy_document" "deny" {
     not_resources = var.catalog_parameter_arn == null ? null : [var.catalog_parameter_arn]
   }
 
-  # Reads AIDevOpsAgentAccessPolicy grants that return user data, code, command output,
-  # configuration contents, environment variables, arguments or credentials, and its one
-  # write. aws_guard.py blocks the same operations.
+  # Reads AIDevOpsAgentAccessPolicy grants, or a later version of it could, that return
+  # user data, code, command output, configuration contents, environment variables,
+  # arguments, query results, sampled requests, traces or credentials, and its one write.
+  # aws_guard.py blocks those of the services aws_call covers.
   statement {
     sid    = "DenyDataReadsInAwsViewPolicy"
     effect = "Deny"
@@ -224,6 +244,25 @@ data "aws_iam_policy_document" "deny" {
       "sagemaker:DescribePipelineDefinitionForExecution",
       "sagemaker:DescribeOptimizationJob",
       "mq:DescribeConfigurationRevision",
+      "xray:BatchGetTraces",
+      "wafv2:GetSampledRequests",
+      "waf:GetSampledRequests",
+      "waf-regional:GetSampledRequests",
+      "appsync:GetGraphqlApiEnvironmentVariables",
+      "codecommit:GetDifferences",
+      "codecommit:GetCommit",
+      "codecommit:GetBlob",
+      "codecommit:GetFile",
+      "codecommit:GetFolder",
+      "codecommit:BatchGet*",
+      "iot:GetThingShadow",
+      "athena:GetNamedQuery",
+      "athena:BatchGetNamedQuery",
+      "athena:GetPreparedStatement",
+      "athena:GetQueryResults",
+      "imagebuilder:GetComponent",
+      "ses:GetTemplate",
+      "ses:GetEmailTemplate",
       "eks:AccessKubernetesApi",
       "support:CreateCase",
     ]

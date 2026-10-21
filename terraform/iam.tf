@@ -22,8 +22,9 @@ locals {
 
   agent_queue_arns = [aws_sqs_queue.alarms.arn, aws_sqs_queue.work.arn]
 
-  # The member accounts' read-only roles: in every account of the organization, or only
-  # in the allowed ones.
+  # The member accounts' read-only roles: in the allowed accounts, or in any account when
+  # none are listed. With organization_id set, the role's account must belong to that
+  # organization either way (aws:ResourceOrgID).
   member_role_accounts = length(var.allowed_account_ids) == 0 ? ["*"] : var.allowed_account_ids
   member_role_arns = var.member_role_name == null ? [] : [
     for account in local.member_role_accounts :
@@ -59,6 +60,7 @@ module "shared" {
   catalog_parameter_arn  = var.catalog_json == null ? null : local.catalog_parameter_arn
   agent_queue_arns       = local.agent_queue_arns
   assumable_role_arns    = local.member_role_arns
+  assumable_role_org_id  = var.member_role_name == null ? null : var.organization_id
 }
 
 # AWS's own policy for its DevOps Agent, for the generic aws_call tool. The deny policy
@@ -182,6 +184,16 @@ data "aws_iam_policy_document" "member_roles" {
     sid       = "AssumeMemberReadRoles"
     actions   = ["sts:AssumeRole"]
     resources = local.member_role_arns
+
+    dynamic "condition" {
+      for_each = var.organization_id == null ? [] : [var.organization_id]
+
+      content {
+        test     = "StringEquals"
+        variable = "aws:ResourceOrgID"
+        values   = [condition.value]
+      }
+    }
   }
 }
 

@@ -51,6 +51,40 @@ def test_key_value_secrets(text: str, expected: str) -> None:
     assert redact(text) == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Cookie: session=abc123; theme=dark", f"Cookie: {REDACTED}"),
+        (
+            "Set-Cookie: sid=s%3Aabc; Path=/; HttpOnly\nnext line",
+            f"Set-Cookie: {REDACTED}\nnext line",
+        ),
+        ("set-cookie:a=1", f"set-cookie:{REDACTED}"),
+        ('{"cookie": "session=abc; csrf=def", "n": 1}', f'{{"cookie": "{REDACTED}", "n": 1}}'),
+        ('headers={"Cookie":"a=b; c=d"}', f'headers={{"Cookie":"{REDACTED}"}}'),
+        ("GET / cookie=sid=1; x=2", f"GET / cookie={REDACTED}"),
+    ],
+)
+def test_cookie_header_values(text: str, expected: str) -> None:
+    assert redact(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("X-Amz-Security-Token: IQoJb3JpZ2lu", f"X-Amz-Security-Token: {REDACTED}"),
+        ("session_token=abc", f"session_token={REDACTED}"),
+    ],
+)
+def test_session_tokens(text: str, expected: str) -> None:
+    assert redact(text) == expected
+
+
+@pytest.mark.parametrize("text", ["the cookie banner failed", "cookies disabled"])
+def test_cookie_in_prose_is_kept(text: str) -> None:
+    assert redact(text) == text
+
+
 def test_basic_credentials() -> None:
     assert redact("Authorization: Basic dXNlcjpwYXNzd29yZA==") == (
         f"Authorization: Basic {REDACTED}"
