@@ -65,7 +65,7 @@ def triage(t: dict[str, str]) -> str:
     p.append(exit_pill(settle, 340, "dropped", t))
     p.append(text(settle, 368, "unverified, stale or refused", t, size=10.5, fill="dim"))
 
-    left, right = gx[0] - R - 44, gx[-1] + R + 44
+    left, right = gx[0] - R - 44, gx[-1] + R + 52
     p.append(boundary(left, 120, right - left, 290, "GATES  ·  no model", "region", t, dashed=True))
     for x, (question, leaves) in zip(gx, gates, strict=True):
         p.append(gate(x, lane, question, t, r=R))
@@ -112,10 +112,16 @@ def investigator(t: dict[str, str]) -> str:
     p.append(tile(reason, lane, "bedrock", "ml", "Reason", "hypotheses first", t))
     p.append(tile(read, lane, "iam", "security", "Read", "read-only tools", t))
     p.append(gate(done, lane, "Reported?", t, r=R))
-    back = reason - T - 40  # clears the Reason label
+    back = reason - T - 40  # clears the Reason label; enters Reason below the forward arrow
     p.append(
         edge(
-            [(done, lane + R), (done, 318), (back, 318), (back, lane), (reason - T, lane)],
+            [
+                (done, lane + R),
+                (done, 318),
+                (back, 318),
+                (back, lane + 18),
+                (reason - T, lane + 18),
+            ],
             t,
             "not yet",
             (back + done) / 2,

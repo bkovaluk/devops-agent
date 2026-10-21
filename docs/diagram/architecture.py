@@ -44,7 +44,7 @@ def draw(t: dict[str, str]) -> str:
     p.append(edge([(1080, 284), (1080, 247)], t))
 
     p.append(tile(940, 175, "sqs", "integration", "SNS topic", "optional", t))
-    p.append(edge([(1062, 286), (1062, 262), (1000, 262), (1000, 175), (968, 175)], t))
+    p.append(edge([(1058, 286), (1058, 252), (990, 252), (990, 175), (968, 175)], t))
 
     p.append(tile(1276, 175, "saas", "saas", "Datadog API", "optional", t))
     p.append(tile(1276, 324, "code", "ext", "GitHub API", "optional", t))
@@ -58,7 +58,7 @@ def draw(t: dict[str, str]) -> str:
 
     p.append(tile(790, 500, "dynamodb", "database", "Findings table", "ttl 90 days", t))
     p.append(edge([(790, 382), (790, 472)], t, "claims, budgets", 798, 430, anchor="start"))
-    p.append(edge([(1054, 330), (1010, 330), (1010, 500), (818, 500)], t, "findings", 914, 492))
+    p.append(edge([(1054, 330), (1018, 330), (1018, 500), (818, 500)], t, "findings", 914, 492))
 
     p.append(
         text(

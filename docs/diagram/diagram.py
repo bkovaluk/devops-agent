@@ -122,14 +122,58 @@ def tile(cx, cy, kind, cat, name, sub, t, size=S):
     return "".join(out)
 
 
+CORNER = 10  # corner radius where an edge turns
+
+
+def rounded_path(pts, r=CORNER):
+    """SVG path data for square segments joined by round corners.
+
+    Each bend becomes a quadratic curve whose control point is the corner, cut back by up
+    to r on both sides (less on a short segment), so a turn reads as one smooth stroke.
+    """
+
+    def n(v):
+        return f"{round(v, 2):g}"
+
+    d = [f"M{n(pts[0][0])},{n(pts[0][1])}"]
+    for (x0, y0), (x1, y1), (x2, y2) in zip(pts, pts[1:], pts[2:], strict=False):
+        a = min(r, (abs(x1 - x0) + abs(y1 - y0)) / 2, (abs(x2 - x1) + abs(y2 - y1)) / 2)
+        ux, uy = (x1 > x0) - (x1 < x0), (y1 > y0) - (y1 < y0)
+        vx, vy = (x2 > x1) - (x2 < x1), (y2 > y1) - (y2 < y1)
+        d.append(f"L{n(x1 - ux * a)},{n(y1 - uy * a)}")
+        d.append(f"Q{n(x1)},{n(y1)} {n(x1 + vx * a)},{n(y1 + vy * a)}")
+    d.append(f"L{n(pts[-1][0])},{n(pts[-1][1])}")
+    return " ".join(d)
+
+
+def trimmed(pts, by=8):
+    """The same route pulled in by `by` at both ends, for the halo: it gaps crossings
+    without nicking the tiles and labels an edge starts and ends at."""
+
+    def step(a, b, n):
+        (x0, y0), (x1, y1) = a, b
+        length = abs(x1 - x0) + abs(y1 - y0)
+        n = min(n, length / 2)
+        return (x0 + (x1 > x0) * n - (x1 < x0) * n, y0 + (y1 > y0) * n - (y1 < y0) * n)
+
+    return [step(pts[0], pts[1], by), *pts[1:-1], step(pts[-1], pts[-2], by)]
+
+
 def edge(pts, t, label=None, lx=None, ly=None, dashed=False, anchor="middle"):
     for (x1, y1), (x2, y2) in pairwise(pts):
         assert x1 == x2 or y1 == y2, (
             f"edge segment {(x1, y1)} to {(x2, y2)} is not horizontal or vertical"
         )
-    d = "M" + " L".join(f"{x},{y}" for x, y in pts)
+    d = rounded_path(pts)
     dash = ' stroke-dasharray="5 4"' if dashed else ""
-    out = f'<path d="{d}" stroke="{t["arrow"]}" stroke-width="1.6" fill="none" marker-end="url(#ah)"{dash}/>'
+    # A background-coloured halo under the stroke: where a later edge crosses an earlier
+    # one it leaves a small gap, so crossings read as "passes over", never as a join.
+    halo = rounded_path(trimmed(pts))
+    out = (
+        f'<path d="{halo}" stroke="{t["bg"]}" stroke-width="6" fill="none"/>'
+        f'<path d="{d}" stroke="{t["arrow"]}" stroke-width="1.6" fill="none" '
+        f'stroke-linejoin="round" marker-end="url(#ah)"{dash}/>'
+    )
     if label:
         out += text(lx, ly, label, t, size=10.5, fill="muted", family=MONO, anchor=anchor)
     return out
