@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 Environment = Literal["dev", "qa", "staging", "prod"]
+
+_ACCOUNT_ID = re.compile(r"^\d{12}$")
 
 
 class Settings(BaseSettings):
@@ -60,11 +63,39 @@ class Settings(BaseSettings):
     # infrastructure live), appended to the system prompt when set.
     prompt_notes: str = ""
 
+    # Many accounts: the read-only role every member account lends the agent. Unset, the
+    # agent reads only the account it runs in.
+    member_role_name: str | None = Field(default=None, pattern=r"^[\w+=,.@-]{1,64}$")
+    member_external_id: str | None = Field(
+        default=None, min_length=2, max_length=1224, pattern=r"^[\w+=,.@:/-]+$"
+    )
+    # When set, signals from any other account are refused.
+    allowed_account_ids: Annotated[frozenset[str], NoDecode] = frozenset()
+    # The Datadog monitor tag whose value names the AWS account a monitor watches.
+    datadog_account_tag: str = Field(default="aws_account", pattern=r"^[a-z][a-z0-9_.-]{0,99}$")
+
+    @field_validator("allowed_account_ids", mode="before")
+    @classmethod
+    def _account_list(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, list | tuple | set | frozenset):
+            invalid = [item for item in value if not _ACCOUNT_ID.match(str(item))]
+            if invalid:
+                raise ValueError(f"not 12-digit account ids: {', '.join(map(str, invalid))}")
+            return frozenset(str(item) for item in value)
+        return value
+
     @model_validator(mode="after")
     def _topic_set_when_enabled(self) -> Settings:
         if self.slack_enabled and not self.slack_topic_arn:
             raise ValueError("slack_topic_arn is required when slack_enabled is true")
         return self
+
+    @property
+    def multi_account(self) -> bool:
+        """True when member accounts lend a role: budgets and metrics then count per account."""
+        return bool(self.member_role_name)
 
 
 class TriageSettings(Settings):
@@ -89,6 +120,9 @@ class TriageSettings(Settings):
     datadog_hourly_share: int = Field(default=6, ge=0)
     # Signals per 5-minute bucket above which two buckets in a row are a storm.
     storm_rate: int = Field(default=30, ge=1)
+    # With member accounts, the jobs one account may use of the hourly and daily budgets.
+    account_hourly_budget: int = Field(default=5, ge=0)
+    account_daily_budget: int = Field(default=25, ge=0)
 
 
 @lru_cache(maxsize=1)

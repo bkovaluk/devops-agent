@@ -10,6 +10,11 @@ under a pre-allocated finding id. A priority 1 or 2 job the budgets refuse goes 
 the alarms queue with a delay and is triaged again while its signal stands; a priority 3
 or 4 job is recorded once per resource key an hour as skipped over budget. Every
 decision emits a metric and a log line (decisions.py).
+
+A signal is about one account (accounts.py). A member account's alarm is read through
+its read-only role, its keys are scoped by the account, and its signals have their own
+signal rate, storm and jobs; with member accounts each account also has its own share of
+the budgets. A signal whose account the agent may not read is dropped.
 """
 
 from __future__ import annotations
@@ -21,13 +26,24 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any, Literal
 
 import boto3
 from aws_lambda_powertools import Logger
 from botocore.exceptions import ClientError
 
+from devops_agent.accounts import (
+    AccountSession,
+    alarm_origin,
+    function_partition,
+    is_member,
+    monitor_account,
+    open_session,
+    own_account,
+    refusal,
+    session_name,
+)
 from devops_agent.active import active_job, claim_keys, link_alarm, release_keys
 from devops_agent.catalog import load_catalog
 from devops_agent.config import TriageSettings, get_triage_settings
@@ -41,12 +57,16 @@ from devops_agent.findings import (
     store_finding,
 )
 from devops_agent.gate import (
+    consume_account_daily_budget,
+    consume_account_hourly_budget,
     consume_daily_budget,
     consume_datadog_share,
     consume_hourly_budget,
     consume_p1_overflow,
     daily_tokens,
     hourly_count,
+    refund_account_daily_budget,
+    refund_account_hourly_budget,
     refund_daily_budget,
     refund_datadog_share,
     refund_hourly_budget,
@@ -58,6 +78,7 @@ from devops_agent.models import (
     InvestigationJob,
     Severity,
     SignalRef,
+    scoped_key,
 )
 from devops_agent.severity import (
     alarm_tags,
@@ -119,12 +140,39 @@ SKIPPED_PRIORITY = 3
 
 
 @dataclass(frozen=True)
-class TriageClients:
+class AlarmReaders:
+    """The clients that read an alarm, its tags and its consumer chain, in its account."""
+
     cloudwatch: Any
     lambda_: Any
     sqs: Any
     kinesis: Any
+
+    @classmethod
+    def of(cls, session: AccountSession) -> AlarmReaders:
+        return cls(
+            cloudwatch=session.client("cloudwatch"),
+            lambda_=session.client("lambda"),
+            sqs=session.client("sqs"),
+            kinesis=session.client("kinesis"),
+        )
+
+
+@dataclass(frozen=True)
+class TriageClients:
+    """Triage's clients on the agent's own credentials. ``sqs`` also sends jobs and
+    retries to the agent's queues; ``sts`` reaches member accounts."""
+
+    cloudwatch: Any
+    lambda_: Any
+    sqs: Any
+    kinesis: Any
+    sts: Any
     table: Any
+
+    @property
+    def readers(self) -> AlarmReaders:
+        return AlarmReaders(self.cloudwatch, self.lambda_, self.sqs, self.kinesis)
 
 
 @lru_cache(maxsize=1)
@@ -134,8 +182,44 @@ def triage_clients(region: str, table_name: str) -> TriageClients:
         lambda_=boto3.client("lambda", region_name=region),
         sqs=boto3.client("sqs", region_name=region),
         kinesis=boto3.client("kinesis", region_name=region),
+        sts=boto3.client("sts", region_name=region),
         table=boto3.resource("dynamodb", region_name=region).Table(table_name),
     )
+
+
+@dataclass
+class _Accounts:
+    """The accounts of one invocation: the agent's own (empty when unknown outside
+    Lambda), and the alarm readers of each member account, opened on first use and kept
+    for this invocation only."""
+
+    clients: TriageClients
+    settings: TriageSettings
+    own: str
+    partition: str
+    name: str
+    seconds_left: Callable[[], float]
+    opened: dict[str, AlarmReaders] = field(default_factory=dict)
+
+    def scope(self, account_id: str) -> str:
+        """The account a signal's keys are scoped by: a member account, else none."""
+        return account_id if is_member(account_id, self.own) else ""
+
+    def readers(self, account_id: str) -> AlarmReaders:
+        if not is_member(account_id, self.own):
+            return self.clients.readers
+        if account_id not in self.opened:
+            session = open_session(
+                account_id,
+                own=self.own,
+                settings=self.settings,
+                sts=self.clients.sts,
+                partition=self.partition,
+                name=self.name,
+                seconds_left=self.seconds_left(),
+            )
+            self.opened[account_id] = AlarmReaders.of(session)
+        return self.opened[account_id]
 
 
 @dataclass
@@ -144,8 +228,8 @@ class _Candidate:
 
     ``body`` is the event as received, without the retry fields. ``retry`` counts the
     times the signal was sent back after a budget deferral, and ``deferred_id`` is the
-    finding its deferral was recorded under. Settling fills ``keys``, ``floor`` and
-    ``tags`` and the signal's priority.
+    finding its deferral was recorded under. Settling fills ``keys`` (scoped by the
+    member account in ``scope``), ``floor`` and ``tags`` and the signal's priority.
     """
 
     signal: Signal
@@ -156,10 +240,15 @@ class _Candidate:
     keys: list[str] = field(default_factory=list)
     floor: Severity = Severity.LOW
     tags: dict[str, str] = field(default_factory=dict)
+    scope: str = ""
 
     @property
     def name(self) -> str:
         return self.signal.name
+
+    @property
+    def account_id(self) -> str:
+        return self.signal.account_id
 
     @property
     def ref(self) -> SignalRef:
@@ -174,12 +263,13 @@ class _Candidate:
         """The id a deferral of this signal is recorded under: the first one's, on a retry."""
         return self.deferred_id or self.finding_id
 
-    def settle(self, keys: list[str], floor: Severity, tags: dict[str, str]) -> None:
-        self.keys = keys
+    def settle(self, keys: list[str], floor: Severity, tags: dict[str, str], scope: str) -> None:
+        self.scope = scope
+        self.keys = [scoped_key(key, scope) for key in keys]
         self.floor = floor
         self.tags = tags
         self.signal = self.signal.model_copy(
-            update={"priority": priority(floor), "resource_keys": keys}
+            update={"priority": priority(floor), "resource_keys": self.keys}
         )
 
 
@@ -215,6 +305,10 @@ class _Job:
         return self.head.deferral_id
 
     @property
+    def account_id(self) -> str:
+        return self.head.account_id
+
+    @property
     def keys(self) -> list[str]:
         return list(dict.fromkeys(key for signal in self.signals for key in signal.keys))
 
@@ -234,7 +328,14 @@ def _decide(
     message: str,
     **fields: Any,
 ) -> None:
-    record_decision(decision, settings.environment, candidate.ref, message, **fields)
+    record_decision(
+        decision,
+        settings.environment,
+        candidate.ref,
+        message,
+        per_account=settings.multi_account,
+        **fields,
+    )
 
 
 def _retry_fields(body: Any) -> tuple[dict[str, Any], int, str | None]:
@@ -265,9 +366,10 @@ def _distinct_signals(records: Sequence[dict[str, Any]]) -> list[_Candidate]:
         signal = parse_signal(raw)
         if signal is None:
             continue
-        known = candidates.get(signal.identity)
+        identity = f"{signal.account_id}/{signal.identity}"
+        known = candidates.get(identity)
         if known is None:
-            candidates[signal.identity] = _Candidate(
+            candidates[identity] = _Candidate(
                 signal, [record["messageId"]], raw, retry, deferred_id
             )
             continue
@@ -277,9 +379,9 @@ def _distinct_signals(records: Sequence[dict[str, Any]]) -> list[_Candidate]:
     return list(candidates.values())
 
 
-def _alarm_config(clients: TriageClients, alarm_name: str) -> dict[str, Any] | None:
+def _alarm_config(readers: AlarmReaders, alarm_name: str) -> dict[str, Any] | None:
     try:
-        return describe_alarm(clients.cloudwatch, alarm_name)
+        return describe_alarm(readers.cloudwatch, alarm_name)
     except ToolError:
         logger.info("alarm no longer exists", extra={"alarm_name": alarm_name})
     except ClientError as exc:
@@ -293,33 +395,33 @@ def _alarm_config(clients: TriageClients, alarm_name: str) -> dict[str, Any] | N
     return None
 
 
-def _consumer_keys(clients: TriageClients, namespace: str, dimensions: dict[str, str]) -> list[str]:
+def _consumer_keys(readers: AlarmReaders, namespace: str, dimensions: dict[str, str]) -> list[str]:
     """The keys of the Lambdas consuming the queue or stream an alarm watches."""
     try:
         if namespace == "AWS/SQS" and (queue := dimensions.get("QueueName")):
-            source_arn = queue_arn(clients.sqs, queue)
+            source_arn = queue_arn(readers.sqs, queue)
         elif namespace == "AWS/Kinesis" and (stream := dimensions.get("StreamName")):
-            source_arn = stream_arn(clients.kinesis, stream)
+            source_arn = stream_arn(readers.kinesis, stream)
         else:
             return []
-        functions = consumer_functions(clients.lambda_, source_arn)
+        functions = consumer_functions(readers.lambda_, source_arn)
     except (ClientError, ToolError) as exc:
         logger.warning("consumer chain unavailable", extra={"error": type(exc).__name__})
         return []
     return [f"AWS/Lambda:FunctionName={function}" for function in functions]
 
 
-def _keys(clients: TriageClients, alarm_name: str, config: dict[str, Any] | None) -> list[str]:
+def _keys(readers: AlarmReaders, alarm_name: str, config: dict[str, Any] | None) -> list[str]:
     primary = primary_key(config) if config else None
     if primary is None:
         return [f"alarm:{alarm_name}"]
     key, namespace, dimensions = primary
-    return list(dict.fromkeys([key, *_consumer_keys(clients, namespace, dimensions)]))
+    return list(dict.fromkeys([key, *_consumer_keys(readers, namespace, dimensions)]))
 
 
-def resource_keys(clients: TriageClients, alarm_name: str) -> list[str]:
-    """The alarm's resource key, then its consumer chain's keys."""
-    return _keys(clients, alarm_name, _alarm_config(clients, alarm_name))
+def resource_keys(readers: AlarmReaders, alarm_name: str) -> list[str]:
+    """The alarm's resource key, then its consumer chain's keys, in the alarm's account."""
+    return _keys(readers, alarm_name, _alarm_config(readers, alarm_name))
 
 
 def _instant(value: Any) -> datetime | None:
@@ -372,14 +474,35 @@ def _store(clients: TriageClients, settings: TriageSettings, now: datetime, **fi
     )
 
 
-def _settle_alarm(clients: TriageClients, settings: TriageSettings, candidate: _Candidate) -> bool:
-    """Keys, tags and floor of a CloudWatch alarm. True when the alarm needs no job.
+def _refuse_account(settings: TriageSettings, candidate: _Candidate, reason: str) -> bool:
+    """Drop a signal whose account the agent may not read: a decision, no finding."""
+    _decide(
+        "skipped_account",
+        settings,
+        candidate,
+        "dropped: account not investigated",
+        reason=reason,
+    )
+    return True
 
-    A retried alarm no longer in the ALARM episode it was deferred in is dropped: it went
-    back to OK, or its newer episode came with its own event.
+
+def _settle_alarm(accounts: _Accounts, settings: TriageSettings, candidate: _Candidate) -> bool:
+    """Keys, tags and floor of a CloudWatch alarm, read in its account. True when the
+    alarm needs no job.
+
+    An alarm from an account or region the agent may not read is dropped. A retried alarm
+    no longer in the ALARM episode it was deferred in is dropped too: it went back to OK,
+    or its newer episode came with its own event.
     """
-    event = alarm_event(candidate.signal)
-    config = _alarm_config(clients, candidate.name)
+    signal = candidate.signal
+    reason = alarm_origin(signal) or refusal(
+        signal.account_id, signal.region, accounts.own, settings
+    )
+    if reason is not None:
+        return _refuse_account(settings, candidate, reason)
+    readers = accounts.readers(signal.account_id)
+    event = alarm_event(signal)
+    config = _alarm_config(readers, candidate.name)
     if candidate.retry and not same_episode(config, event):
         _decide(
             "skipped_unverified",
@@ -389,19 +512,23 @@ def _settle_alarm(clients: TriageClients, settings: TriageSettings, candidate: _
             retry=candidate.retry,
         )
         return True
-    keys = _keys(clients, candidate.name, config)
-    tags = _tags(clients.cloudwatch, event.alarm_arn)
-    candidate.settle(keys, severity_floor(tags), tags)
+    keys = _keys(readers, candidate.name, config)
+    tags = _tags(readers.cloudwatch, event.alarm_arn)
+    candidate.settle(keys, severity_floor(tags), tags, accounts.scope(signal.account_id))
     return False
 
 
 def _settle_monitor(
-    settings: TriageSettings, datadog: DatadogClient | None, candidate: _Candidate
+    accounts: _Accounts,
+    settings: TriageSettings,
+    datadog: DatadogClient | None,
+    candidate: _Candidate,
 ) -> bool:
     """Verify a Datadog signal and key it from the monitor. True when it is dropped.
 
-    Keys, priority and opt-out tags come from the monitor Datadog returns, never from the
-    payload; only the group, verified to be alerting, comes from the notification.
+    Keys, priority, account and opt-out tags come from the monitor Datadog returns, never
+    from the payload; only the group, verified to be alerting, comes from the
+    notification. The account is the monitor's account tag, else the agent's own.
     """
     signal = candidate.signal
     if datadog is None:
@@ -430,10 +557,15 @@ def _settle_monitor(
         if isinstance(monitor_name, str) and monitor_name
         else f"Datadog monitor {signal.ref['monitor_id']}"
     )
+    account_id, problem = monitor_account(
+        tag_pairs(monitor_tags), settings.datadog_account_tag, accounts.own
+    )
     candidate.signal = signal.model_copy(
         update={
             "name": monitor_signal_name(subject, str(signal.ref.get("group"))),
             "subject": subject,
+            "account_id": account_id,
+            "region": settings.aws_region,
             "ref": {
                 **signal.ref,
                 "query": query,
@@ -442,6 +574,9 @@ def _settle_monitor(
             },
         }
     )
+    reason = problem or refusal(account_id, settings.aws_region, accounts.own, settings)
+    if reason is not None:
+        return _refuse_account(settings, candidate, reason)
     keys = datadog_keys(
         int(signal.ref["monitor_id"]),
         str(signal.ref.get("group")),
@@ -449,7 +584,12 @@ def _settle_monitor(
         monitor_tags,
         query,
     )
-    candidate.settle(keys, floor_for_priority(verdict.priority), tag_pairs(monitor_tags))
+    candidate.settle(
+        keys,
+        floor_for_priority(verdict.priority),
+        tag_pairs(monitor_tags),
+        accounts.scope(account_id),
+    )
     return False
 
 
@@ -460,7 +600,7 @@ def _warn_missing_datadog_keys() -> None:
 
 
 def _settle(
-    clients: TriageClients,
+    accounts: _Accounts,
     settings: TriageSettings,
     datadog: DatadogClient | None,
     candidate: _Candidate,
@@ -469,10 +609,10 @@ def _settle(
     """Settle one signal at its source, then opt-out, repeat, cooldown and link. True when
     the signal needs no job."""
     if candidate.signal.source == "cloudwatch":
-        dropped = _settle_alarm(clients, settings, candidate)
+        dropped = _settle_alarm(accounts, settings, candidate)
     else:
-        dropped = _settle_monitor(settings, datadog, candidate)
-    return dropped or _settle_shared(clients, settings, candidate, now)
+        dropped = _settle_monitor(accounts, settings, datadog, candidate)
+    return dropped or _settle_shared(accounts.clients, settings, candidate, now)
 
 
 def _settle_shared(
@@ -580,25 +720,33 @@ def _by_priority(candidates: list[_Candidate]) -> list[_Candidate]:
 
 
 def plan_jobs(candidates: list[_Candidate], storm_threshold: int) -> list[_Job]:
-    """Distinct jobs for the signals left after linking, highest floor first.
+    """Distinct jobs for the signals left after linking, per account, highest floor first.
 
-    A signal sharing any key with one planned before it follows that signal's job. When
-    storm_threshold or more jobs remain, they become one incident job.
+    A job reads one account, so signals of different accounts never share one. Within an
+    account, a signal sharing any key with one planned before it follows that signal's
+    job, and when storm_threshold or more jobs remain they become one incident job.
     """
+    accounts: dict[str, list[_Candidate]] = {}
+    for candidate in candidates:
+        accounts.setdefault(candidate.account_id, []).append(candidate)
+    return [job for group in accounts.values() for job in _account_jobs(group, storm_threshold)]
+
+
+def _account_jobs(candidates: list[_Candidate], storm_threshold: int) -> list[_Job]:
     leaders: list[_Candidate] = []
     owners: dict[str, _Candidate] = {}
     followers: dict[str, list[_Follower]] = {}
     for candidate in _by_priority(candidates):
         shared = next((key for key in candidate.keys if key in owners), None)
         if shared is not None:
-            followers[owners[shared].signal.identity].append(_Follower(candidate, shared))
+            followers[owners[shared].finding_id].append(_Follower(candidate, shared))
             continue
         leaders.append(candidate)
-        followers[candidate.signal.identity] = []
+        followers[candidate.finding_id] = []
         owners.update(dict.fromkeys(candidate.keys, candidate))
     if len(leaders) < storm_threshold:
         return [
-            _Job(FindingKind.ALARM, [leader], leader.floor, followers[leader.signal.identity])
+            _Job(FindingKind.ALARM, [leader], leader.floor, followers[leader.finding_id])
             for leader in leaders
         ]
     return [
@@ -606,7 +754,7 @@ def plan_jobs(candidates: list[_Candidate], storm_threshold: int) -> list[_Job]:
             FindingKind.INCIDENT,
             leaders,
             leaders[0].floor,
-            [follower for leader in leaders for follower in followers[leader.signal.identity]],
+            [follower for leader in leaders for follower in followers[leader.finding_id]],
         )
     ]
 
@@ -669,11 +817,13 @@ def _charge(
 ) -> _Charges | _Refusal:
     """Count the job against its budgets. Why it is refused, with nothing kept counted.
 
-    The hourly budget (and, for a Datadog job, the Datadog share of it) comes first; a
-    priority 1 job past either takes the day's priority 1 overflow instead. The daily
-    budget applies to every job.
+    The hourly budget (and, for a Datadog job, the Datadog share of it, and with member
+    accounts the job's account's share) comes first; a priority 1 job past any of them
+    takes the day's priority 1 overflow instead. The daily budget, and with member
+    accounts the account's share of it, applies to every job.
     """
     table = clients.table
+    account = job.account_id
     charges = _Charges([refund_hourly_budget])
     reason: str | None = None
     if not consume_hourly_budget(table, settings.hourly_budget, now):
@@ -682,6 +832,10 @@ def _charge(
         charges.refunds.append(refund_datadog_share)
         if not consume_datadog_share(table, settings.datadog_hourly_share, now):
             reason = "the Datadog share of the hourly budget is spent"
+    if reason is None and settings.multi_account:
+        charges.refunds.append(partial(refund_account_hourly_budget, account_id=account))
+        if not consume_account_hourly_budget(table, settings.account_hourly_budget, now, account):
+            reason = f"account {account}'s share of the hourly budget is spent"
     if reason is not None:
         charges.refund(table, now)
         if job.priority != 1:
@@ -694,6 +848,11 @@ def _charge(
     if not consume_daily_budget(table, settings.daily_budget, now):
         charges.refund(table, now)
         return _Refusal("the daily investigation budget is spent")
+    if settings.multi_account:
+        charges.refunds.append(partial(refund_account_daily_budget, account_id=account))
+        if not consume_account_daily_budget(table, settings.account_daily_budget, now, account):
+            charges.refund(table, now)
+            return _Refusal(f"account {account}'s share of the daily budget is spent")
     return charges
 
 
@@ -926,6 +1085,8 @@ def _job_message(job: _Job) -> InvestigationJob:
         alarm_count=len(job.signals),
         keys=job.keys,
         floor=job.floor,
+        account_id=job.account_id,
+        region=job.head.signal.region,
     )
 
 
@@ -944,6 +1105,7 @@ def dispatch(
     finding_id = job.finding_id
     log_keys = {
         "alarm_name": job.head.name,
+        "account_id": job.account_id,
         "kind": job.kind.value,
         "alarm_count": len(job.signals),
         "follower_count": len(job.followers),
@@ -984,10 +1146,15 @@ def _storm_id(head: _Candidate) -> str:
 
 
 def storm_window(
-    clients: TriageClients, settings: TriageSettings, pending: list[_Candidate], now: datetime
+    clients: TriageClients,
+    settings: TriageSettings,
+    pending: list[_Candidate],
+    now: datetime,
+    scope: str = "",
 ) -> Storm | None:
     """Count the batch's first firings and return the open storm, opening or ending it.
 
+    ``pending`` are the signals of one member account (``scope``) or of the agent's own.
     A deferred signal sent back for retry is not counted again. A storm opens when the
     previous and the current 5-minute bucket both hold more than ``storm_rate`` signals,
     with the highest-priority signal of the batch as its head. It ends once a full bucket
@@ -996,18 +1163,23 @@ def storm_window(
     if not pending:
         return None
     fresh = sum(1 for candidate in pending if not candidate.retry)
-    rate = record_rate(clients.table, fresh, now)
-    storm = active_storm(clients.table, now)
+    rate = record_rate(clients.table, fresh, now, scope)
+    storm = active_storm(clients.table, now, scope)
     if storm is not None and rate.previous <= settings.storm_rate:
         end_storm(clients.table, storm, now)
         logger.info("storm over", extra={"storm_id": storm.storm_id, "rate": rate.previous})
         return None
     if storm is None and min(rate.previous, rate.current) > settings.storm_rate:
         head = _by_priority(pending)[0]
-        storm = claim_storm(clients.table, Storm(_storm_id(head), head.deferral_id), now)
+        storm = claim_storm(clients.table, Storm(_storm_id(head), head.deferral_id, scope), now)
         logger.warning(
             "storm opened",
-            extra={"storm_id": storm.storm_id, "previous": rate.previous, "current": rate.current},
+            extra={
+                "storm_id": storm.storm_id,
+                "account_id": head.account_id,
+                "previous": rate.previous,
+                "current": rate.current,
+            },
         )
     return storm
 
@@ -1152,6 +1324,29 @@ def _seconds_left(context: Any) -> Callable[[], float]:
     return lambda: remaining() / 1000
 
 
+def _scopes(pending: list[_Candidate]) -> dict[str, list[_Candidate]]:
+    """The settled signals by the member account their keys are scoped by."""
+    scopes: dict[str, list[_Candidate]] = {}
+    for candidate in pending:
+        scopes.setdefault(candidate.scope, []).append(candidate)
+    return scopes
+
+
+def _dispatch(
+    clients: TriageClients, settings: TriageSettings, pending: list[_Candidate], now: datetime
+) -> list[str]:
+    """Storm mode or planned jobs for one scope's signals; the message ids that failed."""
+    scope = pending[0].scope
+    try:
+        storm = storm_window(clients, settings, pending, now, scope)
+    except Exception as exc:
+        logger.error("signal rate unavailable", extra={"error": type(exc).__name__})
+        return [message_id for rest in pending for message_id in rest.message_ids]
+    if storm is not None:
+        return storm_dispatch(clients, settings, storm, pending, now)
+    return _dispatch_planned(clients, settings, pending, now)
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     settings = get_triage_settings()
     logger.setLevel(settings.log_level)
@@ -1160,6 +1355,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     now = datetime.now(UTC)
 
     seconds_left = _seconds_left(context)
+    accounts = _Accounts(
+        clients=clients,
+        settings=settings,
+        own=own_account(context, settings, clients.sts),
+        partition=function_partition(context),
+        name=session_name("devops-agent-triage", str(getattr(context, "aws_request_id", ""))),
+        seconds_left=seconds_left,
+    )
     failures: list[str] = []
     pending: list[_Candidate] = []
     candidates = _distinct_signals(event.get("Records", []))
@@ -1176,7 +1379,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             failures.extend(candidate.message_ids)
             continue
         try:
-            if not _settle(clients, settings, datadog, candidate, now):
+            if not _settle(accounts, settings, datadog, candidate, now):
                 pending.append(candidate)
         except DatadogError as exc:
             datadog_down = True
@@ -1188,16 +1391,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
             failures.extend(candidate.message_ids)
 
-    try:
-        storm = storm_window(clients, settings, pending, now)
-    except Exception as exc:
-        logger.error("signal rate unavailable", extra={"error": type(exc).__name__})
-        failures.extend(message_id for rest in pending for message_id in rest.message_ids)
-    else:
-        if storm is not None:
-            failures.extend(storm_dispatch(clients, settings, storm, pending, now))
-        else:
-            failures.extend(_dispatch_planned(clients, settings, pending, now))
+    for scoped in _scopes(pending).values():
+        failures.extend(_dispatch(clients, settings, scoped, now))
 
     logger.info(
         "batch triaged",

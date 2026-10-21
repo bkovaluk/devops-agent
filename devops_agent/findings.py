@@ -68,6 +68,8 @@ def _membership(job: InvestigationJob) -> dict[str, Any]:
 def _signal_fields(signal: SignalRef) -> dict[str, Any]:
     return {
         "source": signal.source,
+        "account_id": signal.account_id or None,
+        "region": signal.region or None,
         "alarm_name": signal.name,
         "alarm_arn": signal.arn,
         "alarm_reason": redact(signal.reason) or None,
@@ -159,6 +161,8 @@ def build_finding(
         "env": env,
         "kind": job.kind,
         **_signal_fields(job.signal),
+        "account_id": job.account_id or None,
+        "region": job.region or None,
         "resource_key": job.resource_key,
         "linked_alarms": list(linked_alarms),
         "previous_finding_id": previous_finding_id,

@@ -11,7 +11,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache, partial
+from functools import lru_cache
 from typing import Any
 
 import boto3
@@ -19,6 +19,14 @@ from aws_lambda_powertools import Logger
 from botocore.config import Config
 from pydantic import ValidationError
 
+from devops_agent.accounts import (
+    AccountAccessError,
+    AccountSession,
+    function_partition,
+    open_session,
+    own_account,
+    session_name,
+)
 from devops_agent.active import linked_alarms
 from devops_agent.agent import MODEL_READ_TIMEOUT_SECONDS, Investigation, investigate
 from devops_agent.config import Settings, get_settings
@@ -40,7 +48,7 @@ from devops_agent.notify import publish_finding
 from devops_agent.precheck import build_context
 from devops_agent.redact import redact_finding
 from devops_agent.snapshot import build_snapshot, encode_snapshot
-from devops_agent.tools import ToolContext, botocore_session, offered_tools
+from devops_agent.tools import ToolContext, offered_tools
 
 logger = Logger(service="devops-agent")
 logging.getLogger("botocore").setLevel(logging.WARNING)
@@ -50,73 +58,72 @@ PRIOR_FINDINGS = 3
 
 
 @dataclass(frozen=True)
-class AwsClients:
-    cloudwatch: Any
-    logs: Any
-    cloudtrail: Any
-    lambda_: Any
-    sqs: Any
-    kinesis: Any
-    rds: Any
-    pi: Any
-    opensearch: Any
-    elbv2: Any
-    elasticache: Any
-    stepfunctions: Any
-    apigatewayv2: Any
-    ec2: Any
-    s3: Any
-    events: Any
-    scheduler: Any
+class AgentClients:
+    """The clients on the agent's own credentials: the model, notifications, STS (to
+    reach a member account) and the findings table. Every read of the investigated
+    account goes through the job's AccountSession."""
+
     bedrock: Any
     sns: Any
+    sts: Any
     table: Any
 
 
 @lru_cache(maxsize=1)
-def aws_clients(region: str, table_name: str) -> AwsClients:
+def agent_clients(region: str, table_name: str) -> AgentClients:
     bedrock_config = Config(
         read_timeout=MODEL_READ_TIMEOUT_SECONDS, retries={"mode": "standard", "max_attempts": 1}
     )
-    return AwsClients(
-        cloudwatch=boto3.client("cloudwatch", region_name=region),
-        logs=boto3.client("logs", region_name=region),
-        cloudtrail=boto3.client("cloudtrail", region_name=region),
-        lambda_=boto3.client("lambda", region_name=region),
-        sqs=boto3.client("sqs", region_name=region),
-        kinesis=boto3.client("kinesis", region_name=region),
-        rds=boto3.client("rds", region_name=region),
-        pi=boto3.client("pi", region_name=region),
-        opensearch=boto3.client("opensearch", region_name=region),
-        elbv2=boto3.client("elbv2", region_name=region),
-        elasticache=boto3.client("elasticache", region_name=region),
-        stepfunctions=boto3.client("stepfunctions", region_name=region),
-        apigatewayv2=boto3.client("apigatewayv2", region_name=region),
-        ec2=boto3.client("ec2", region_name=region),
-        s3=boto3.client("s3", region_name=region),
-        events=boto3.client("events", region_name=region),
-        scheduler=boto3.client("scheduler", region_name=region),
+    return AgentClients(
         bedrock=boto3.client("bedrock-runtime", region_name=region, config=bedrock_config),
         sns=boto3.client("sns", region_name=region),
+        sts=boto3.client("sts", region_name=region),
         table=boto3.resource("dynamodb", region_name=region).Table(table_name),
     )
 
 
-AWS_CALL_CLIENT_CONFIG = Config(
-    connect_timeout=5, read_timeout=20, retries={"max_attempts": 2, "mode": "standard"}
-)
+def read_session(
+    agent: AgentClients, settings: Settings, job: InvestigationJob, context: Any
+) -> AccountSession:
+    """The session one job reads its account through, built for that job alone: the
+    agent's own credentials for its own account, the member role's for a member account."""
+    return open_session(
+        job.account_id,
+        own=own_account(context, settings, agent.sts),
+        settings=settings,
+        sts=agent.sts,
+        partition=function_partition(context),
+        name=session_name("devops-agent", job.finding_id),
+        seconds_left=_seconds_left(context)(),
+    )
 
 
-@lru_cache(maxsize=1)
-def _aws_call_session() -> boto3.session.Session:
-    """A boto3 session on the botocore session the aws_call catalog and guard read."""
-    return boto3.session.Session(botocore_session=botocore_session())
-
-
-@lru_cache(maxsize=64)
-def aws_service_client(region: str, service: str) -> Any:
-    """A client for any covered service, for aws_call: built on first use, then kept."""
-    return _aws_call_session().client(service, region_name=region, config=AWS_CALL_CLIENT_CONFIG)
+def tool_context(session: AccountSession, settings: Settings, job: InvestigationJob) -> ToolContext:
+    """The tools' clients, every one from the job's session."""
+    return ToolContext(
+        cloudwatch=session.client("cloudwatch"),
+        logs=session.client("logs"),
+        cloudtrail=session.client("cloudtrail"),
+        lambda_=session.client("lambda"),
+        sqs=session.client("sqs"),
+        kinesis=session.client("kinesis"),
+        rds=session.client("rds"),
+        pi=session.client("pi"),
+        opensearch=session.client("opensearch"),
+        elbv2=session.client("elbv2"),
+        elasticache=session.client("elasticache"),
+        stepfunctions=session.client("stepfunctions"),
+        apigatewayv2=session.client("apigatewayv2"),
+        ec2=session.client("ec2"),
+        s3=session.client("s3"),
+        events=session.client("events"),
+        scheduler=session.client("scheduler"),
+        alarm_name=job.signal.name,
+        datadog=datadog_client(settings),
+        github=github_client(settings),
+        aws_client=session.aws_call_client,
+        alarm_time=_signal_at(job),
+    )
 
 
 def parse_job(record: dict[str, Any]) -> InvestigationJob | None:
@@ -150,7 +157,7 @@ def _seconds_left(context: Any) -> Callable[[], float]:
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     settings = get_settings()
     logger.setLevel(settings.log_level)
-    aws = aws_clients(settings.aws_region, settings.findings_table)
+    aws = agent_clients(settings.aws_region, settings.findings_table)
 
     failures: list[dict[str, str]] = []
     for record in event.get("Records", []):
@@ -165,7 +172,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 
 def _handle_record(
-    aws: AwsClients, settings: Settings, record: dict[str, Any], context: Any
+    aws: AgentClients, settings: Settings, record: dict[str, Any], context: Any
 ) -> bool:
     """False when the record must be retried: its finding could not be stored."""
     job = parse_job(record)
@@ -268,7 +275,7 @@ def _capture_snapshot(
 
 
 def _investigate_and_record(
-    aws: AwsClients,
+    aws: AgentClients,
     settings: Settings,
     job: InvestigationJob,
     now: datetime,
@@ -279,32 +286,10 @@ def _investigate_and_record(
         "source": job.signal.source,
         "finding_id": job.finding_id,
         "kind": job.kind.value,
+        "account_id": job.account_id,
     }
+    ctx = tool_context(read_session(aws, settings, job, context), settings, job)
     recall = _recall(aws.table, job)
-    ctx = ToolContext(
-        cloudwatch=aws.cloudwatch,
-        logs=aws.logs,
-        cloudtrail=aws.cloudtrail,
-        lambda_=aws.lambda_,
-        sqs=aws.sqs,
-        kinesis=aws.kinesis,
-        rds=aws.rds,
-        pi=aws.pi,
-        opensearch=aws.opensearch,
-        elbv2=aws.elbv2,
-        elasticache=aws.elasticache,
-        stepfunctions=aws.stepfunctions,
-        apigatewayv2=aws.apigatewayv2,
-        ec2=aws.ec2,
-        s3=aws.s3,
-        events=aws.events,
-        scheduler=aws.scheduler,
-        alarm_name=job.signal.name,
-        datadog=datadog_client(settings),
-        github=github_client(settings),
-        aws_client=partial(aws_service_client, settings.aws_region),
-        alarm_time=_signal_at(job),
-    )
     bundle = build_context(ctx, job, now, lambda: useful_sources(aws.table, job.resource_key))
     investigation = investigate(
         aws.bedrock, ctx, settings, job, bundle.text, recall.reviewed, _seconds_left(context)
@@ -368,7 +353,7 @@ def _investigate_and_record(
 
 
 def _record_failure(
-    aws: AwsClients,
+    aws: AgentClients,
     settings: Settings,
     job: InvestigationJob,
     now: datetime,
@@ -376,10 +361,19 @@ def _record_failure(
 ) -> bool:
     """Store an incomplete finding naming the failure. False when that store fails too.
 
-    Only the exception's class name is kept; its message may quote what was read.
+    Only the exception's class name is kept, since its message may quote what was read;
+    an AccountAccessError's message is kept too, as it names only the account, the role
+    and an AWS error code.
     """
     error = type(exc).__name__
-    log_keys = {"alarm_name": job.signal.name, "finding_id": job.finding_id, "error": error}
+    if isinstance(exc, AccountAccessError):
+        error = f"{error}: {exc}"
+    log_keys = {
+        "alarm_name": job.signal.name,
+        "finding_id": job.finding_id,
+        "account_id": job.account_id,
+        "error": error,
+    }
     logger.error("investigation failed", extra=log_keys)
     try:
         finding = build_finding(

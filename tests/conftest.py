@@ -7,12 +7,16 @@ import functools
 import json
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
+import boto3
 import pytest
 from botocore.exceptions import ClientError
+from botocore.stub import Stubber
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -40,6 +44,7 @@ ALARMS_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/111122223333/devops-agen
 @pytest.fixture(autouse=True)
 def settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("ENVIRONMENT", "prod")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("FINDINGS_TABLE", "devops-agent-findings-prod")
     monkeypatch.setenv("SLACK_TOPIC_ARN", "arn:aws:sns:us-east-1:111122223333:ops-alerts-prod")
     monkeypatch.setenv("SLACK_CHANNEL", "#ops-alerts")
@@ -449,6 +454,115 @@ def sqs_record(body: Any, message_id: str = "msg-1") -> dict[str, Any]:
     """An SQS Lambda event record; a model is sent as JSON with its aliases."""
     text = body if isinstance(body, str) else json.dumps(body)
     return {"messageId": message_id, "receiptHandle": "rh", "body": text, "eventSource": "aws:sqs"}
+
+
+class FakeSession:
+    """An AccountSession: one FakeClient per service, the same one for aws_call."""
+
+    def __init__(self, account_id: str = "") -> None:
+        self.account_id = account_id
+        self.clients: dict[str, FakeClient] = {}
+
+    def client(self, service: str) -> FakeClient:
+        return self.clients.setdefault(service, FakeClient())
+
+    def aws_call_client(self, service: str) -> FakeClient:
+        return self.client(service)
+
+
+class FakeInvestigator:
+    """The investigator's clients: its own (Bedrock, SNS, STS, the table) and the job's
+    session, which every read of the investigated account goes through."""
+
+    def __init__(self) -> None:
+        self.bedrock = FakeBedrock()
+        self.sns = FakeClient()
+        self.sts = FakeClient()
+        self.table = FakeTable()
+        self.session = FakeSession()
+
+    def __getattr__(self, name: str) -> FakeClient:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self.session.client(name)
+
+
+def patch_investigator(mocker: Any) -> FakeInvestigator:
+    """Run the investigator handler on fakes: its own clients and every job's session."""
+    from devops_agent import handler as handler_module
+
+    fake = FakeInvestigator()
+    mocker.patch.object(
+        handler_module,
+        "agent_clients",
+        return_value=handler_module.AgentClients(
+            bedrock=fake.bedrock, sns=fake.sns, sts=fake.sts, table=fake.table
+        ),
+    )
+    mocker.patch.object(handler_module, "open_session", return_value=fake.session)
+    return fake
+
+
+OWN_ACCOUNT = "111122223333"
+MEMBER_ACCOUNT = "444455556666"
+OTHER_ACCOUNT = "777788889999"
+OWN_ACCESS_KEY = "own-key-0000000000"
+FUNCTION_ARN = f"arn:aws:lambda:us-east-1:{OWN_ACCOUNT}:function:devops-agent-prod"
+
+
+def lambda_context(arn: str | None = FUNCTION_ARN, seconds_left: float = 600.0) -> Any:
+    """A Lambda context of the agent's function in its own account."""
+    context = MagicMock()
+    context.invoked_function_arn = arn
+    context.aws_request_id = "req-1"
+    context.get_remaining_time_in_millis.return_value = int(seconds_left * 1000)
+    return context
+
+
+def member_alarm_event(name: str = ALARM_NAME, account: str = MEMBER_ACCOUNT) -> dict[str, Any]:
+    """An alarm event forwarded from a member account."""
+    event = alarm_event(name=name)
+    event["account"] = account
+    event["resources"] = [f"arn:aws:cloudwatch:us-east-1:{account}:alarm:{name}"]
+    return event
+
+
+def signing_key(client: Any) -> str:
+    """The access key a boto3 client signs with."""
+    key: str = client._request_signer._credentials.get_frozen_credentials().access_key
+    return key
+
+
+def member_credentials(account: str) -> dict[str, Any]:
+    """AssumeRole credentials for a member account, built at run time."""
+    return {
+        "AccessKeyId": f"member-key-{account}",
+        "SecretAccessKey": f"member-secret-{account}",
+        "SessionToken": f"member-token-{account}",
+        "Expiration": datetime.now(UTC) + timedelta(hours=1),
+    }
+
+
+def stubbed_sts() -> tuple[Any, Stubber]:
+    """A real STS client on the agent's own credentials, answering from a Stubber."""
+    sts = boto3.client(
+        "sts",
+        region_name="us-east-1",
+        aws_access_key_id=OWN_ACCESS_KEY,
+        aws_secret_access_key="own-secret",
+    )
+    stubber = Stubber(sts)
+    stubber.activate()
+    return sts, stubber
+
+
+@pytest.fixture()
+def own_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The agent's own credentials, as Lambda puts them in the environment."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", OWN_ACCESS_KEY)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "own-secret")
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
 
 
 # ToolContext fields that hold the alarm, not a client.

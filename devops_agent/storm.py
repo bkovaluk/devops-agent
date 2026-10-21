@@ -9,6 +9,10 @@ with (its head, by the id its deferral would be recorded under, so a deferred he
 comes back is still the head). Priority 1 and 2 signals keep going through the budgets as
 usual; every priority 3 or 4 signal is grouped onto the storm finding, which counts them by
 source and by primary resource key, until a full bucket stays at or below the rate.
+
+Each member account has its own rate and storm (``scope``, its account id), so a flood in
+one account groups that account's signals only; the agent's own account keeps the
+unscoped ones.
 """
 
 from __future__ import annotations
@@ -27,10 +31,16 @@ STORM_TTL = timedelta(hours=24)
 
 @dataclass(frozen=True)
 class Storm:
-    """The open storm: its finding and its head's deferral id."""
+    """The open storm: its finding, its head's deferral id, and the member account it is
+    in (empty for the agent's own)."""
 
     storm_id: str
     head_id: str
+    scope: str = ""
+
+
+def _storm_pk(scope: str) -> str:
+    return f"{STORM_PK}#{scope}" if scope else STORM_PK
 
 
 def _condition_failed(exc: ClientError) -> bool:
@@ -38,15 +48,15 @@ def _condition_failed(exc: ClientError) -> bool:
     return code == "ConditionalCheckFailedException"
 
 
-def _storm(item: dict[str, Any] | None, now: datetime) -> Storm | None:
+def _storm(item: dict[str, Any] | None, now: datetime, scope: str) -> Storm | None:
     if not item or int(item["ttl"]) <= int(now.timestamp()):
         return None
-    return Storm(str(item["finding_id"]), str(item["head_id"]))
+    return Storm(str(item["finding_id"]), str(item["head_id"]), scope)
 
 
-def active_storm(table: Any, now: datetime) -> Storm | None:
+def active_storm(table: Any, now: datetime, scope: str = "") -> Storm | None:
     """The open storm; an item past its ttl counts as gone."""
-    return _storm(table.get_item(Key={"pk": STORM_PK}).get("Item"), now)
+    return _storm(table.get_item(Key={"pk": _storm_pk(scope)}).get("Item"), now, scope)
 
 
 def claim_storm(table: Any, storm: Storm, now: datetime) -> Storm:
@@ -54,7 +64,7 @@ def claim_storm(table: Any, storm: Storm, now: datetime) -> Storm:
     try:
         table.put_item(
             Item={
-                "pk": STORM_PK,
+                "pk": _storm_pk(storm.scope),
                 "finding_id": storm.storm_id,
                 "head_id": storm.head_id,
                 "created_at": now.isoformat(),
@@ -67,7 +77,8 @@ def claim_storm(table: Any, storm: Storm, now: datetime) -> Storm:
     except ClientError as exc:
         if not _condition_failed(exc):
             raise
-        owner = _storm(table.get_item(Key={"pk": STORM_PK}, ConsistentRead=True).get("Item"), now)
+        item = table.get_item(Key={"pk": _storm_pk(storm.scope)}, ConsistentRead=True).get("Item")
+        owner = _storm(item, now, storm.scope)
         if owner is None:
             raise RuntimeError("storm item vanished after a failed claim") from None
         return owner
@@ -78,7 +89,7 @@ def end_storm(table: Any, storm: Storm, now: datetime) -> None:
     """Expire the storm, leaving one another invocation has since opened."""
     try:
         table.update_item(
-            Key={"pk": STORM_PK},
+            Key={"pk": _storm_pk(storm.scope)},
             UpdateExpression="SET #ttl = :now",
             ConditionExpression="finding_id = :id",
             ExpressionAttributeNames={"#ttl": "ttl"},
@@ -127,7 +138,9 @@ class Rate:
     current: int
 
 
-def record_rate(table: Any, accepted: int, now: datetime) -> Rate:
+def record_rate(table: Any, accepted: int, now: datetime, scope: str = "") -> Rate:
     """Add this batch's accepted signals; the previous and current bucket counts."""
-    current = add_signals(table, accepted, now) if accepted else signal_rate(table, now)
-    return Rate(signal_rate(table, now - RATE_BUCKET), current)
+    current = (
+        add_signals(table, accepted, now, scope) if accepted else signal_rate(table, now, scope)
+    )
+    return Rate(signal_rate(table, now - RATE_BUCKET, scope), current)

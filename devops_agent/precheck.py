@@ -298,7 +298,7 @@ class _Precheck:
 
     def _read_siblings(self) -> tuple[Any, int]:
         own = {signal.name for signal in self._job.signals}
-        keys = set(self._job.keys)
+        keys = set(self._job.local_keys)
         others, more = firing_alarms(self._ctx.cloudwatch, self._job.signal.name)
         matches: list[dict[str, Any]] = []
         for alarm in others:
@@ -311,14 +311,14 @@ class _Precheck:
                 matches.append({**project_firing_alarm(alarm), "resource_key": key})
         shown = matches[:MAX_SIBLINGS]
         content = {
-            "keys": self._job.keys,
+            "keys": self._job.local_keys,
             "alarms": shown,
             "truncated": len(matches) > MAX_SIBLINGS or more,
         }
         return content, len(shown)
 
     def _read_database_events(self) -> tuple[Any, int]:
-        namespace, _, dimension = self._job.resource_key.partition(":")
+        namespace, _, dimension = self._job.local_resource_key.partition(":")
         name, _, identifier = dimension.partition("=")
         if namespace not in DATABASE_NAMESPACES or not identifier:
             raise _NotApplicable("the primary resource is not an RDS or DocumentDB database")
@@ -327,7 +327,7 @@ class _Precheck:
         return {"identifier": identifier, **events}, len(events["items"])
 
     def _read_instance(self) -> tuple[Any, int]:
-        namespace, _, dimension = self._job.resource_key.partition(":")
+        namespace, _, dimension = self._job.local_resource_key.partition(":")
         name, _, instance_id = dimension.partition("=")
         if namespace != "AWS/EC2" or name != "InstanceId" or not instance_id:
             raise _NotApplicable("the primary resource is not an EC2 instance")
@@ -339,7 +339,7 @@ class _Precheck:
 
     def _read_service_notes(self) -> tuple[Any, int]:
         names = [signal.name.lower() for signal in self._job.signals]
-        targets = [*names, self._job.resource_key.lower()]
+        targets = [*names, self._job.local_resource_key.lower()]
         matched = [
             note
             for note in self._notes

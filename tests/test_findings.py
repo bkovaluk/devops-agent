@@ -71,6 +71,8 @@ FIELDS = {
     "created_at",
     "env",
     "source",
+    "account_id",
+    "region",
     "alarm_name",
     "alarm_arn",
     "severity",
@@ -718,3 +720,72 @@ def test_incomplete_datadog_finding_points_at_the_monitor() -> None:
     finding = build_finding(env="prod", job=datadog_job(), investigation=investigation, now=NOW)
     assert "Look at the monitor directly." in finding.summary
     assert finding.actions[0].text.startswith("Open the monitor checkout-api 5xx rate (id 1234567)")
+
+
+def test_finding_records_the_jobs_account_and_region() -> None:
+    finding = build_finding(env="prod", job=_job(), investigation=_reported("high"), now=NOW)
+    item = to_item(finding)
+    assert item["account_id"] == "111122223333"
+    assert item["region"] == "us-east-1"
+
+
+def test_triage_finding_records_the_signals_account() -> None:
+    signal = job().signal.model_copy(update={"account_id": "444455556666"})
+    finding = build_triage_finding(
+        env="prod",
+        kind=FindingKind.SKIPPED,
+        signal=signal,
+        resource_key=f"444455556666/{FUNCTION_KEY}",
+        floor=Severity.HIGH,
+        now=NOW,
+        title="Skipped",
+        summary="Skipped.",
+    )
+    assert finding.account_id == "444455556666"
+    assert finding.resource_key == f"444455556666/{FUNCTION_KEY}"
+
+
+def test_finding_of_an_unknown_account_stores_none() -> None:
+    signal = job().signal.model_copy(update={"account_id": "", "region": ""})
+    finding = build_triage_finding(
+        env="prod",
+        kind=FindingKind.SKIPPED,
+        signal=signal,
+        resource_key=FUNCTION_KEY,
+        floor=Severity.HIGH,
+        now=NOW,
+        title="Skipped",
+        summary="Skipped.",
+    )
+    assert finding.account_id is None
+    assert finding.region is None
+
+
+def test_findings_stored_before_accounts_are_still_recalled_and_cool_down() -> None:
+    table = FakeTable()
+    closed_at = NOW - timedelta(minutes=10)
+    table.items["finding#f-old"] = {
+        "pk": "finding#f-old",
+        "finding_id": "f-old",
+        "created_at": (NOW - timedelta(days=1)).isoformat(),
+        "kind": "alarm",
+        "status": "closed",
+        "resolution": "confirmed",
+        "resolved_at": closed_at.isoformat(),
+        "alarm_arn": "arn:aws:cloudwatch:us-east-1:111122223333:alarm:a",
+        "resource_key": FUNCTION_KEY,
+    }
+    [item] = prior_findings(table, FUNCTION_KEY, 25)
+    assert "account_id" not in item
+    assert is_reviewed(item)
+    cooled = closed_in_cooldown(
+        table,
+        FUNCTION_KEY,
+        "arn:aws:cloudwatch:us-east-1:111122223333:alarm:a",
+        NOW,
+        alarm_cooldown=timedelta(minutes=120),
+        resource_cooldown=timedelta(minutes=60),
+        limit=50,
+    )
+    assert cooled is not None
+    assert prior_findings(table, f"444455556666/{FUNCTION_KEY}", 25) == []

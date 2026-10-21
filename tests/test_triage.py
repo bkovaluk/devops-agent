@@ -92,6 +92,7 @@ def clients(mocker: MockerFixture, account: Account) -> TriageClients:
         lambda_=FakeClient({"list_event_source_mappings": {"EventSourceMappings": []}}),
         sqs=FakeSqs(),
         kinesis=FakeClient(),
+        sts=FakeClient(),
         table=FakeTable(),
     )
     mocker.patch.object(triage_module, "triage_clients", return_value=built)
@@ -698,7 +699,11 @@ def test_job_is_emitted_with_a_pre_allocated_id_and_active_items(clients: Triage
         "alarm_count",
         "keys",
         "floor",
+        "account_id",
+        "region",
     }
+    assert body["account_id"] == "111122223333"
+    assert body["region"] == "us-east-1"
     assert body["signals"][0]["source"] == "cloudwatch"
     assert body["signals"][0]["name"] == ALARM_NAME
     assert body["signals"][0]["priority"] == 2
@@ -898,6 +903,7 @@ def test_triage_clients_builds_only_what_triage_reads(mocker: MockerFixture) -> 
         "lambda",
         "sqs",
         "kinesis",
+        "sts",
     ]
     boto3.resource.return_value.Table.assert_called_once_with("table")
     assert clients.table is boto3.resource.return_value.Table.return_value

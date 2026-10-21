@@ -14,7 +14,7 @@ from devops_agent import handler as handler_module
 from devops_agent.agent import Investigation, investigate
 from devops_agent.config import Settings
 from devops_agent.findings import SNAPSHOT_RETENTION_DAYS, store_snapshot
-from devops_agent.handler import AwsClients, handler
+from devops_agent.handler import handler
 from devops_agent.models import InvestigationJob
 from devops_agent.snapshot import (
     MAX_PLAIN_SNAPSHOT_BYTES,
@@ -25,10 +25,11 @@ from devops_agent.snapshot import (
 from devops_agent.tools import ToolContext
 from tests.conftest import (
     FakeBedrock,
-    FakeClient,
+    FakeInvestigator,
     FakeTable,
     converse_response,
     job,
+    patch_investigator,
     report,
     sqs_record,
     tool_use,
@@ -146,38 +147,15 @@ def test_store_snapshot_puts_a_snap_item_with_a_ttl() -> None:
 
 
 @pytest.fixture()
-def aws(mocker: MockerFixture) -> AwsClients:
-    clients = AwsClients(
-        cloudwatch=FakeClient(),
-        logs=FakeClient(),
-        cloudtrail=FakeClient(),
-        lambda_=FakeClient(),
-        sqs=FakeClient(),
-        kinesis=FakeClient(),
-        rds=FakeClient(),
-        pi=FakeClient(),
-        opensearch=FakeClient(),
-        elbv2=FakeClient(),
-        elasticache=FakeClient(),
-        stepfunctions=FakeClient(),
-        apigatewayv2=FakeClient(),
-        ec2=FakeClient(),
-        s3=FakeClient(),
-        events=FakeClient(),
-        scheduler=FakeClient(),
-        bedrock=FakeBedrock(),
-        sns=FakeClient(),
-        table=FakeTable(),
-    )
-    mocker.patch.object(handler_module, "aws_clients", return_value=clients)
-    return clients
+def aws(mocker: MockerFixture) -> FakeInvestigator:
+    return patch_investigator(mocker)
 
 
 def _event(work: InvestigationJob) -> dict[str, Any]:
     return {"Records": [sqs_record(work.model_dump(mode="json", by_alias=True))]}
 
 
-def test_handler_captures_a_snapshot_after_storing_the_finding(aws: AwsClients) -> None:
+def test_handler_captures_a_snapshot_after_storing_the_finding(aws: FakeInvestigator) -> None:
     aws.bedrock.script.extend(
         [converse_response(tool_use("recent_changes", {})), converse_response(report())]
     )
@@ -192,7 +170,7 @@ def test_handler_captures_a_snapshot_after_storing_the_finding(aws: AwsClients) 
 
 
 def test_handler_skips_the_snapshot_when_capture_is_off(
-    aws: AwsClients, monkeypatch: pytest.MonkeyPatch
+    aws: FakeInvestigator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CAPTURE_SNAPSHOTS", "false")
     aws.bedrock.script.append(converse_response(report()))
@@ -202,7 +180,7 @@ def test_handler_skips_the_snapshot_when_capture_is_off(
 
 
 def test_a_failed_snapshot_write_does_not_fail_the_job(
-    aws: AwsClients, mocker: MockerFixture
+    aws: FakeInvestigator, mocker: MockerFixture
 ) -> None:
     mocker.patch.object(handler_module, "store_snapshot", side_effect=RuntimeError("boom"))
     aws.bedrock.script.append(converse_response(report()))
@@ -210,7 +188,7 @@ def test_a_failed_snapshot_write_does_not_fail_the_job(
     assert "finding#f-1" in aws.table.items
 
 
-def test_an_oversized_snapshot_is_not_stored(aws: AwsClients, mocker: MockerFixture) -> None:
+def test_an_oversized_snapshot_is_not_stored(aws: FakeInvestigator, mocker: MockerFixture) -> None:
     mocker.patch.object(handler_module, "encode_snapshot", return_value=None)
     aws.bedrock.script.append(converse_response(report()))
     assert handler(_event(job(finding_id="f-1")), None) == {"batchItemFailures": []}

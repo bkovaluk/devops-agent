@@ -16,7 +16,7 @@ from pytest_mock import MockerFixture
 from devops_agent import handler as handler_module
 from devops_agent.config import Settings
 from devops_agent.findings import store_finding
-from devops_agent.handler import AwsClients, handler
+from devops_agent.handler import handler
 from devops_agent.models import FindingKind, InvestigationJob, Severity
 from tests.conftest import (
     ALARM_NAME,
@@ -24,14 +24,13 @@ from tests.conftest import (
     GITHUB_APP_ID,
     GITHUB_INSTALLATION_ID,
     GITHUB_ORG,
-    FakeBedrock,
-    FakeClient,
-    FakeTable,
+    FakeInvestigator,
     client_error,
     converse_response,
     github_private_pem,
     has_float,
     job,
+    patch_investigator,
     report,
     sqs_record,
     tool_use,
@@ -39,31 +38,8 @@ from tests.conftest import (
 
 
 @pytest.fixture()
-def aws(mocker: MockerFixture) -> AwsClients:
-    clients = AwsClients(
-        cloudwatch=FakeClient(),
-        logs=FakeClient(),
-        cloudtrail=FakeClient(),
-        lambda_=FakeClient(),
-        sqs=FakeClient(),
-        kinesis=FakeClient(),
-        rds=FakeClient(),
-        pi=FakeClient(),
-        opensearch=FakeClient(),
-        elbv2=FakeClient(),
-        elasticache=FakeClient(),
-        stepfunctions=FakeClient(),
-        apigatewayv2=FakeClient(),
-        ec2=FakeClient(),
-        s3=FakeClient(),
-        events=FakeClient(),
-        scheduler=FakeClient(),
-        bedrock=FakeBedrock(),
-        sns=FakeClient(),
-        table=FakeTable(),
-    )
-    mocker.patch.object(handler_module, "aws_clients", return_value=clients)
-    return clients
+def aws(mocker: MockerFixture) -> FakeInvestigator:
+    return patch_investigator(mocker)
 
 
 def _event(*jobs: InvestigationJob) -> dict[str, Any]:
@@ -75,20 +51,20 @@ def _event(*jobs: InvestigationJob) -> dict[str, Any]:
     }
 
 
-def _prompt(aws: AwsClients) -> str:
+def _prompt(aws: FakeInvestigator) -> str:
     text: str = aws.bedrock.calls[0]["messages"][0]["content"][0]["text"]
     return text
 
 
 @pytest.mark.parametrize("body", ["not json", json.dumps({"finding_id": "f-1"}), ""])
-def test_record_that_is_not_a_job_is_dropped(aws: AwsClients, body: str) -> None:
+def test_record_that_is_not_a_job_is_dropped(aws: FakeInvestigator, body: str) -> None:
     result = handler({"Records": [sqs_record(body)]}, None)
     assert result == {"batchItemFailures": []}
     assert aws.table.puts == []
     assert aws.bedrock.calls == []
 
 
-def test_high_finding_is_stored_redacted_and_published(aws: AwsClients) -> None:
+def test_high_finding_is_stored_redacted_and_published(aws: FakeInvestigator) -> None:
     aws.bedrock.script.append(
         converse_response(
             report(
@@ -118,7 +94,7 @@ def test_high_finding_is_stored_redacted_and_published(aws: AwsClients) -> None:
 
 
 def test_slack_off_stores_a_high_finding_without_publishing(
-    aws: AwsClients, monkeypatch: pytest.MonkeyPatch
+    aws: FakeInvestigator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("SLACK_ENABLED", "false")
     handler_module.get_settings.cache_clear()
@@ -131,7 +107,7 @@ def test_slack_off_stores_a_high_finding_without_publishing(
 
 
 def test_medium_finding_is_stored_but_not_published(
-    aws: AwsClients, monkeypatch: pytest.MonkeyPatch
+    aws: FakeInvestigator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ENVIRONMENT", "staging")
     monkeypatch.setenv("SLACK_TOPIC_ARN", "arn:aws:sns:us-east-1:111122223333:ops-alerts-staging")
@@ -143,7 +119,7 @@ def test_medium_finding_is_stored_but_not_published(
     assert aws.sns.calls == []
 
 
-def test_floor_comes_from_the_job(aws: AwsClients) -> None:
+def test_floor_comes_from_the_job(aws: FakeInvestigator) -> None:
     aws.bedrock.script.append(converse_response(report("low")))
     handler(_event(job(floor=Severity.CRITICAL)), None)
     [item] = aws.table.findings()
@@ -151,7 +127,7 @@ def test_floor_comes_from_the_job(aws: AwsClients) -> None:
     assert "list_tags_for_resource" not in aws.cloudwatch.operations()
 
 
-def _prior(aws: AwsClients, n: int, title: str, **fields: Any) -> None:
+def _prior(aws: FakeInvestigator, n: int, title: str, **fields: Any) -> None:
     aws.table.items[f"finding#f-{n}"] = {
         "pk": f"finding#f-{n}",
         "finding_id": f"f-{n}",
@@ -165,7 +141,7 @@ def _prior(aws: AwsClients, n: int, title: str, **fields: Any) -> None:
     }
 
 
-def test_only_reviewed_prior_findings_reach_the_prompt(aws: AwsClients) -> None:
+def test_only_reviewed_prior_findings_reach_the_prompt(aws: FakeInvestigator) -> None:
     work = job(finding_id="f-new")
     _prior(aws, 0, "Confirmed cold start", status="closed", resolution="confirmed")
     _prior(aws, 1, "Load test noise", status="closed", resolution="false_positive")
@@ -193,7 +169,7 @@ def test_only_reviewed_prior_findings_reach_the_prompt(aws: AwsClients) -> None:
     assert aws.table.items["finding#f-new"]["prior_finding_ids"] == ["f-1", "f-0"]
 
 
-def test_reviewed_prior_findings_are_capped(aws: AwsClients) -> None:
+def test_reviewed_prior_findings_are_capped(aws: FakeInvestigator) -> None:
     for n in range(5):
         _prior(aws, n, f"Confirmed {n}", status="closed", resolution="confirmed")
     aws.bedrock.script.append(converse_response(report("high")))
@@ -202,7 +178,9 @@ def test_reviewed_prior_findings_are_capped(aws: AwsClients) -> None:
     assert [f"Confirmed {n}" in prompt for n in range(5)] == [False, False, True, True, True]
 
 
-def test_context_bundle_is_in_the_prompt_and_summarized_on_the_finding(aws: AwsClients) -> None:
+def test_context_bundle_is_in_the_prompt_and_summarized_on_the_finding(
+    aws: FakeInvestigator,
+) -> None:
     aws.bedrock.script.append(converse_response(report("high")))
     handler(_event(job(finding_id="f-1")), None)
 
@@ -233,7 +211,7 @@ def _query_logs_turn() -> dict[str, Any]:
     )
 
 
-def _logs_with_rows(aws: AwsClients) -> None:
+def _logs_with_rows(aws: FakeInvestigator) -> None:
     aws.logs.responses["start_query"] = {"queryId": "q"}
     aws.logs.responses["get_query_results"] = {
         "status": "Complete",
@@ -241,7 +219,9 @@ def _logs_with_rows(aws: AwsClients) -> None:
     }
 
 
-def test_useful_sources_are_remembered_after_a_reported_investigation(aws: AwsClients) -> None:
+def test_useful_sources_are_remembered_after_a_reported_investigation(
+    aws: FakeInvestigator,
+) -> None:
     _logs_with_rows(aws)
     aws.bedrock.script.extend([_query_logs_turn(), converse_response(report("high"))])
     handler(_event(job()), None)
@@ -255,14 +235,14 @@ def test_useful_sources_are_remembered_after_a_reported_investigation(aws: AwsCl
     assert item["ttl"] > time.time() + 89 * 86400
 
 
-def test_useful_sources_are_not_remembered_when_incomplete(aws: AwsClients) -> None:
+def test_useful_sources_are_not_remembered_when_incomplete(aws: FakeInvestigator) -> None:
     _logs_with_rows(aws)
     aws.bedrock.script.extend([_query_logs_turn(), client_error("ValidationException")])
     handler(_event(job()), None)
     assert f"obs#{FUNCTION_KEY}" not in aws.table.items
 
 
-def test_useful_sources_are_capped_newest_first(aws: AwsClients) -> None:
+def test_useful_sources_are_capped_newest_first(aws: FakeInvestigator) -> None:
     stored = [
         {"tool": "get_metric", "input": {"metric_name": f"m{n}"}, "at": "2026-09-01"}
         for n in range(10)
@@ -278,7 +258,7 @@ def test_useful_sources_are_capped_newest_first(aws: AwsClients) -> None:
     assert entries[1:] == stored[:9]
 
 
-def test_stored_sources_of_tools_that_do_not_exist_are_dropped(aws: AwsClients) -> None:
+def test_stored_sources_of_tools_that_do_not_exist_are_dropped(aws: FakeInvestigator) -> None:
     kept = {"tool": "get_metric", "input": {"metric_name": "m"}, "at": "2026-09-01"}
     gone = {"tool": "describe_widget", "input": {"name": "w"}, "at": "2026-09-01"}
     aws.table.items[f"obs#{FUNCTION_KEY}"] = {
@@ -294,7 +274,7 @@ def test_stored_sources_of_tools_that_do_not_exist_are_dropped(aws: AwsClients) 
     assert entries[1] == kept
 
 
-def test_remembered_sources_reach_the_next_bundle(aws: AwsClients) -> None:
+def test_remembered_sources_reach_the_next_bundle(aws: FakeInvestigator) -> None:
     aws.table.items[f"obs#{FUNCTION_KEY}"] = {
         "pk": f"obs#{FUNCTION_KEY}",
         "entries": [
@@ -310,7 +290,7 @@ def test_remembered_sources_reach_the_next_bundle(aws: AwsClients) -> None:
     assert aws.table.items["finding#f-1"]["context_summary"]["counts"]["sources_last_time"] == 1
 
 
-def test_failure_to_remember_sources_keeps_the_finding(aws: AwsClients) -> None:
+def test_failure_to_remember_sources_keeps_the_finding(aws: FakeInvestigator) -> None:
     _logs_with_rows(aws)
     aws.table.errors["update_item"] = client_error("ProvisionedThroughputExceededException")
     aws.bedrock.script.extend([_query_logs_turn(), converse_response(report("high"))])
@@ -318,7 +298,7 @@ def test_failure_to_remember_sources_keeps_the_finding(aws: AwsClients) -> None:
     assert aws.table.items["finding#f-1"]["outcome"] == "reported"
 
 
-def test_incident_prompt_lists_the_alarms_and_slack_names_the_storm(aws: AwsClients) -> None:
+def test_incident_prompt_lists_the_alarms_and_slack_names_the_storm(aws: FakeInvestigator) -> None:
     storm = job(
         "orders-errors",
         "payments-errors",
@@ -343,7 +323,7 @@ def test_incident_prompt_lists_the_alarms_and_slack_names_the_storm(aws: AwsClie
     assert call["Subject"] == "[DevOps agent] PROD HIGH: Storm: 6 alarms in 60 s"
 
 
-def test_linked_alarms_are_read_from_the_jobs_active_items(aws: AwsClients) -> None:
+def test_linked_alarms_are_read_from_the_jobs_active_items(aws: FakeInvestigator) -> None:
     queue_key = "AWS/SQS:QueueName=orders"
     work = job(keys=(FUNCTION_KEY, queue_key), finding_id="f-1")
     aws.table.items[f"active#{FUNCTION_KEY}"] = {
@@ -364,7 +344,7 @@ def test_linked_alarms_are_read_from_the_jobs_active_items(aws: AwsClients) -> N
     assert item["linked_alarms"] == ["payment-duration", "payment-throttles"]
 
 
-def test_redelivered_job_with_a_stored_finding_is_a_no_op(aws: AwsClients) -> None:
+def test_redelivered_job_with_a_stored_finding_is_a_no_op(aws: FakeInvestigator) -> None:
     work = job(finding_id="f-1")
     aws.bedrock.script.append(converse_response(report("high")))
     handler(_event(work), None)
@@ -377,7 +357,7 @@ def test_redelivered_job_with_a_stored_finding_is_a_no_op(aws: AwsClients) -> No
 
 
 def test_finding_stored_meanwhile_is_not_published_twice(
-    aws: AwsClients, mocker: MockerFixture
+    aws: FakeInvestigator, mocker: MockerFixture
 ) -> None:
     mocker.patch.object(handler_module, "store_finding", return_value=False)
     aws.bedrock.script.append(converse_response(report("high")))
@@ -385,7 +365,7 @@ def test_finding_stored_meanwhile_is_not_published_twice(
     assert aws.sns.calls == []
 
 
-def test_incomplete_investigation_is_recorded(aws: AwsClients) -> None:
+def test_incomplete_investigation_is_recorded(aws: FakeInvestigator) -> None:
     aws.bedrock.script.append(client_error("ValidationException"))
     handler(_event(job(finding_id="f-1")), None)
     item = aws.table.items["finding#f-1"]
@@ -393,7 +373,7 @@ def test_incomplete_investigation_is_recorded(aws: AwsClients) -> None:
     assert item["severity"] == "high"
 
 
-def test_remaining_time_comes_from_context(aws: AwsClients) -> None:
+def test_remaining_time_comes_from_context(aws: FakeInvestigator) -> None:
     context = MagicMock()
     context.get_remaining_time_in_millis.return_value = 5_000
     handler(_event(job()), context)
@@ -402,39 +382,19 @@ def test_remaining_time_comes_from_context(aws: AwsClients) -> None:
     assert aws.bedrock.calls == []
 
 
-def test_aws_clients_builds_each_client(mocker: MockerFixture) -> None:
+def test_agent_clients_are_only_the_agents_own(mocker: MockerFixture) -> None:
     boto3 = mocker.patch.object(handler_module, "boto3")
-    handler_module.aws_clients.cache_clear()
-    clients = handler_module.aws_clients("us-east-1", "table")
+    handler_module.agent_clients.cache_clear()
+    clients = handler_module.agent_clients("us-east-1", "table")
     services = [call.args[0] for call in boto3.client.call_args_list]
-    assert services == [
-        "cloudwatch",
-        "logs",
-        "cloudtrail",
-        "lambda",
-        "sqs",
-        "kinesis",
-        "rds",
-        "pi",
-        "opensearch",
-        "elbv2",
-        "elasticache",
-        "stepfunctions",
-        "apigatewayv2",
-        "ec2",
-        "s3",
-        "events",
-        "scheduler",
-        "bedrock-runtime",
-        "sns",
-    ]
+    assert services == ["bedrock-runtime", "sns", "sts"]
     boto3.resource.return_value.Table.assert_called_once_with("table")
     assert clients.table is boto3.resource.return_value.Table.return_value
-    handler_module.aws_clients.cache_clear()
+    handler_module.agent_clients.cache_clear()
 
 
 def test_crash_stores_an_incomplete_finding_under_the_job_id(
-    aws: AwsClients, mocker: MockerFixture
+    aws: FakeInvestigator, mocker: MockerFixture
 ) -> None:
     attempts: list[str] = []
 
@@ -460,7 +420,7 @@ def test_crash_stores_an_incomplete_finding_under_the_job_id(
 
 
 def test_crash_on_store_reports_the_record_for_retry(
-    aws: AwsClients, mocker: MockerFixture
+    aws: FakeInvestigator, mocker: MockerFixture
 ) -> None:
     mocker.patch.object(handler_module, "store_finding", side_effect=RuntimeError("boom"))
     aws.bedrock.script.append(converse_response(report("high")))
@@ -469,7 +429,7 @@ def test_crash_on_store_reports_the_record_for_retry(
     assert aws.table.findings() == []
 
 
-def test_failure_before_investigation_is_recorded(aws: AwsClients) -> None:
+def test_failure_before_investigation_is_recorded(aws: FakeInvestigator) -> None:
     aws.table.errors["query"] = client_error("ProvisionedThroughputExceededException")
     handler(_event(job(finding_id="f-1")), None)
     item = aws.table.items["finding#f-1"]
@@ -477,7 +437,7 @@ def test_failure_before_investigation_is_recorded(aws: AwsClients) -> None:
     assert aws.bedrock.calls == []
 
 
-def test_unreadable_table_reports_the_record_for_retry(aws: AwsClients) -> None:
+def test_unreadable_table_reports_the_record_for_retry(aws: FakeInvestigator) -> None:
     aws.table.errors["get_item"] = client_error("InternalServerError")
     result = handler(_event(job()), None)
     assert result == {"batchItemFailures": [{"itemIdentifier": "msg-1"}]}
@@ -510,13 +470,13 @@ def test_topic_must_be_an_sns_topic_arn(arn: str, monkeypatch: pytest.MonkeyPatc
 
 def test_bedrock_client_has_one_attempt_and_a_bounded_read(mocker: MockerFixture) -> None:
     boto3 = mocker.patch.object(handler_module, "boto3")
-    handler_module.aws_clients.cache_clear()
-    handler_module.aws_clients("us-east-1", "table")
+    handler_module.agent_clients.cache_clear()
+    handler_module.agent_clients("us-east-1", "table")
     [bedrock_call] = [c for c in boto3.client.call_args_list if c.args[0] == "bedrock-runtime"]
     config = bedrock_call.kwargs["config"]
     assert config.read_timeout == 60
     assert config.retries == {"mode": "standard", "max_attempts": 1}
-    handler_module.aws_clients.cache_clear()
+    handler_module.agent_clients.cache_clear()
 
 
 def test_botocore_logging_is_quiet() -> None:
@@ -527,7 +487,7 @@ DD_API_KEY = "ddapi0123456789abcdef0123456789ab"
 DD_APP_KEY = "ddapp0123456789abcdef0123456789abcdef0123"
 
 
-def _offered_tools(aws: AwsClients) -> set[str]:
+def _offered_tools(aws: FakeInvestigator) -> set[str]:
     return {
         tool["toolSpec"]["name"]
         for tool in aws.bedrock.calls[0]["toolConfig"]["tools"]
@@ -536,7 +496,7 @@ def _offered_tools(aws: AwsClients) -> set[str]:
 
 
 def test_datadog_search_runs_with_both_keys_and_never_leaks_them(
-    aws: AwsClients,
+    aws: FakeInvestigator,
     monkeypatch: pytest.MonkeyPatch,
     mocker: MockerFixture,
     capsys: pytest.CaptureFixture[str],
@@ -576,7 +536,7 @@ def test_datadog_search_runs_with_both_keys_and_never_leaks_them(
 
 
 def test_datadog_search_is_not_offered_without_the_app_key(
-    aws: AwsClients, monkeypatch: pytest.MonkeyPatch
+    aws: FakeInvestigator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DD_API_KEY", DD_API_KEY)
     aws.bedrock.script.append(converse_response(report()))
@@ -593,7 +553,7 @@ def _set_github_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_github_tools_run_with_all_credentials_and_never_leak_them(
-    aws: AwsClients,
+    aws: FakeInvestigator,
     monkeypatch: pytest.MonkeyPatch,
     mocker: MockerFixture,
     capsys: pytest.CaptureFixture[str],
@@ -644,7 +604,7 @@ def test_github_tools_run_with_all_credentials_and_never_leak_them(
 
 @pytest.mark.parametrize("missing", ["GH_APP_ID", "GH_APP_INSTALLATION_ID", "GH_APP_PRIVATE_KEY"])
 def test_github_tools_are_not_offered_without_every_credential(
-    aws: AwsClients, monkeypatch: pytest.MonkeyPatch, missing: str
+    aws: FakeInvestigator, monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     _set_github_credentials(monkeypatch)
     monkeypatch.delenv(missing)
@@ -660,7 +620,9 @@ def _tokens_pk() -> str:
     )
 
 
-def test_weighted_tokens_are_added_to_the_day_and_both_counts_recorded(aws: AwsClients) -> None:
+def test_weighted_tokens_are_added_to_the_day_and_both_counts_recorded(
+    aws: FakeInvestigator,
+) -> None:
     aws.bedrock.script.append(
         {
             **converse_response(report("high")),
@@ -682,7 +644,7 @@ def test_weighted_tokens_are_added_to_the_day_and_both_counts_recorded(aws: AwsC
 
 
 def test_token_count_failure_still_stores_the_finding(
-    aws: AwsClients, mocker: MockerFixture
+    aws: FakeInvestigator, mocker: MockerFixture
 ) -> None:
     mocker.patch.object(handler_module, "add_daily_tokens", side_effect=RuntimeError("boom"))
     aws.bedrock.script.append(
@@ -693,7 +655,7 @@ def test_token_count_failure_still_stores_the_finding(
     assert aws.table.items["finding#f-1"]["weighted_tokens"] == 35
 
 
-def test_run_without_usage_adds_nothing(aws: AwsClients) -> None:
+def test_run_without_usage_adds_nothing(aws: FakeInvestigator) -> None:
     aws.bedrock.script.append(converse_response(report("high")))
     handler(_event(job(finding_id="f-1")), None)
     assert _tokens_pk() not in aws.table.items

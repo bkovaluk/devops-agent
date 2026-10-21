@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -10,6 +11,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 ALARM_STATE_CHANGE = "CloudWatch Alarm State Change"
 DATADOG_ALERT = "Datadog Alert Notification"
+
+# A resource key scoped to a member account: "<12-digit account id>/<key>".
+_SCOPED_KEY = re.compile(r"^(\d{12})/(.+)$", re.DOTALL)
+
+
+def scoped_key(key: str, account_id: str) -> str:
+    """The key of a resource in a member account; the agent's own keys stay as they are."""
+    return f"{account_id}/{key}" if account_id else key
+
+
+def local_key(key: str) -> str:
+    """A resource key without its account scope."""
+    match = _SCOPED_KEY.match(key)
+    return match.group(2) if match else key
 
 
 class Severity(StrEnum):
@@ -172,6 +187,8 @@ class SignalRef(BaseModel):
     monitor name with its group). ``ref`` holds the source's own identifiers: the alarm ARN,
     account, region and state reason, or the monitor id, group, group tags, query, type,
     states and evaluation time. ``priority`` runs from 1 (critical) to 4 (low).
+    ``account_id`` and ``region`` are where the signal's resource lives: an alarm event's
+    account and region, or for a Datadog signal what triage settles from the monitor.
     """
 
     source: SignalSource
@@ -179,6 +196,8 @@ class SignalRef(BaseModel):
     subject: str
     observed_at: str | None = None
     priority: int = Field(default=4, ge=1, le=4)
+    account_id: str = ""
+    region: str = ""
     ref: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
@@ -189,6 +208,8 @@ class SignalRef(BaseModel):
             subject=event.alarm_name,
             observed_at=event.entered_at,
             priority=SEVERITY_PRIORITY[floor],
+            account_id=event.account,
+            region=event.region,
             ref={
                 "alarm_arn": event.alarm_arn,
                 "account": event.account,
@@ -414,10 +435,12 @@ class InvestigationJob(BaseModel):
     """A work-queue message: one signal, or a storm of signals, to investigate.
 
     Triage pre-allocates ``finding_id``; the finding is stored under it exactly once.
-    ``keys`` are the resource keys the job holds ``active#`` items for, primary first.
-    ``signals`` lists the job's signals, the one it is about first; ``alarms`` holds the
-    CloudWatch events among them, in the same order. A job written without ``signals``
-    gets them from its alarms.
+    ``keys`` are the resource keys the job holds ``active#`` items for, primary first,
+    scoped by account for a member account (see accounts.py). ``signals`` lists the job's
+    signals, the one it is about first; ``alarms`` holds the CloudWatch events among them,
+    in the same order. A job written without ``signals`` gets them from its alarms.
+    ``account_id`` and ``region`` say where every signal of the job lives; a job written
+    without them takes its first signal's, else its alarm event's.
     """
 
     finding_id: str = Field(min_length=1)
@@ -427,6 +450,8 @@ class InvestigationJob(BaseModel):
     alarm_count: int = Field(ge=1)
     keys: list[str] = Field(min_length=1)
     floor: Severity
+    account_id: str = ""
+    region: str = ""
 
     @model_validator(mode="after")
     def _signals(self) -> InvestigationJob:
@@ -434,6 +459,11 @@ class InvestigationJob(BaseModel):
             self.signals = [SignalRef.for_alarm(event, self.floor) for event in self.alarms]
         if not self.signals:
             raise ValueError("a job needs at least one signal")
+        alarm = self.alarm
+        self.account_id = (
+            self.account_id or self.signals[0].account_id or (alarm.account if alarm else "")
+        )
+        self.region = self.region or self.signals[0].region or (alarm.region if alarm else "")
         return self
 
     @property
@@ -450,6 +480,15 @@ class InvestigationJob(BaseModel):
     @property
     def resource_key(self) -> str:
         return self.keys[0]
+
+    @property
+    def local_keys(self) -> list[str]:
+        """The keys as the resources' own account names them, without an account scope."""
+        return [local_key(key) for key in self.keys]
+
+    @property
+    def local_resource_key(self) -> str:
+        return local_key(self.keys[0])
 
 
 class ContextSummary(BaseModel):
@@ -529,12 +568,15 @@ class Finding(BaseModel):
     signal ``alarm_name`` is the monitor name with its group and ``alarm_arn`` its
     ``datadog:monitor/<id>/<group>`` identity. A storm finding counts its signals in
     ``alarm_count``, ``source_counts`` and ``resource_counts`` (by primary resource key).
+    ``account_id`` and ``region`` are where the signal's resource lives; null when unknown.
     """
 
     finding_id: str
     created_at: str
     env: str
     source: SignalSource = "cloudwatch"
+    account_id: str | None = None
+    region: str | None = None
     alarm_name: str
     alarm_arn: str
     severity: Severity
