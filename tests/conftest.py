@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from devops_agent import github as github_module
+from devops_agent.accounts import clear_caller_account
 from devops_agent.catalog import load_catalog
 from devops_agent.config import Settings, get_settings, get_triage_settings
 from devops_agent.models import (
@@ -477,7 +478,7 @@ class FakeInvestigator:
     def __init__(self) -> None:
         self.bedrock = FakeBedrock()
         self.sns = FakeClient()
-        self.sts = FakeClient()
+        self.sts = FakeClient({"get_caller_identity": {"Account": OWN_ACCOUNT}})
         self.table = FakeTable()
         self.session = FakeSession()
 
@@ -590,6 +591,13 @@ def github_private_pem() -> str:
         )
         .decode()
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_cached_caller_account() -> Iterator[None]:
+    clear_caller_account()
+    yield
+    clear_caller_account()
 
 
 @pytest.fixture(autouse=True)

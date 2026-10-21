@@ -755,9 +755,14 @@ behaves as described everywhere else in this document. `accounts.py` implements 
 - **Settings.** `MEMBER_ROLE_NAME` (the member role's name; unset, no member account is
   read), `MEMBER_EXTERNAL_ID` (a secret setting; it reaches the functions as a
   plaintext environment variable, like the Datadog and GitHub keys),
-  `ALLOWED_ACCOUNT_IDS` (comma-separated; when set, every other account is refused) and `DATADOG_ACCOUNT_TAG` (default `aws_account`), on both
-  functions. The agent's own account comes from the function ARN in the Lambda
-  context (from `sts:GetCallerIdentity` outside Lambda when member accounts are on).
+  `ALLOWED_ACCOUNT_IDS` (comma-separated; when set, every other account is refused)
+  and `DATADOG_ACCOUNT_TAG` (default `aws_account`), on both functions. The agent's own
+  account comes from the function ARN in the Lambda context, and outside Lambda from
+  `sts:GetCallerIdentity` on the agent's own client, read once per process. While STS
+  cannot tell it, a signal or job that names an account is refused (a
+  `skipped_account` decision in triage, an incomplete finding in the investigator)
+  rather than read with the agent's own credentials; one that names no account (a
+  Datadog monitor without the account tag) stays the agent's own.
 - **Account of a signal.** CloudWatch: the event's `account`, which must be an account
   id and match the alarm ARN's, as its region must. Datadog: the value of the
   `DATADOG_ACCOUNT_TAG` tag on the monitor Datadog returns (never the payload), else

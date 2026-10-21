@@ -22,6 +22,7 @@ from tests.conftest import (
     DATADOG_MONITOR_ID,
     ECS_SERVICE_KEY,
     FUNCTION_KEY,
+    OWN_ACCOUNT,
     WORK_QUEUE_URL,
     FakeClient,
     FakeSqs,
@@ -92,7 +93,7 @@ def clients(mocker: MockerFixture, account: Account) -> TriageClients:
         lambda_=FakeClient({"list_event_source_mappings": {"EventSourceMappings": []}}),
         sqs=FakeSqs(),
         kinesis=FakeClient(),
-        sts=FakeClient(),
+        sts=FakeClient({"get_caller_identity": {"Account": OWN_ACCOUNT}}),
         table=FakeTable(),
     )
     mocker.patch.object(triage_module, "triage_clients", return_value=built)

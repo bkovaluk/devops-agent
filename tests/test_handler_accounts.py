@@ -205,6 +205,34 @@ def test_failed_assume_role_is_an_incomplete_finding_naming_it(run: Run) -> None
     assert run.bedrock.calls == []
 
 
+def test_job_naming_an_account_is_incomplete_when_sts_cannot_tell_the_own_account(
+    run: Run,
+) -> None:
+    run.stubber.add_client_error("get_caller_identity", "AccessDenied", "not authorized")
+    result = handler(
+        _event(member_job(account=OWN_ACCOUNT, finding_id="f-1")), lambda_context(None)
+    )
+    assert result == {"batchItemFailures": []}
+    item = run.table.items["finding#f-1"]
+    assert item["outcome"] == "incomplete"
+    assert (
+        f"failed with AccountAccessError: the agent's own account is unknown, so account "
+        f"{OWN_ACCOUNT} is not read" in item["summary"]
+    )
+    run.stubber.assert_no_pending_responses()
+    assert run.contexts == []
+    assert run.bedrock.calls == []
+
+
+def test_own_account_outside_lambda_comes_from_sts(run: Run) -> None:
+    run.stubber.add_response("get_caller_identity", {"Account": OWN_ACCOUNT})
+    run.expect_assume(MEMBER_ACCOUNT, "f-1")
+    _reports(run)
+    handler(_event(member_job(finding_id="f-1")), lambda_context(None))
+    assert run.table.items["finding#f-1"]["outcome"] == "reported"
+    run.stubber.assert_no_pending_responses()
+
+
 def test_member_job_without_a_member_role_is_incomplete(
     run: Run, monkeypatch: pytest.MonkeyPatch
 ) -> None:

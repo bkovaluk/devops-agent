@@ -29,6 +29,7 @@ from tests.conftest import (
     FakeSqs,
     FakeTable,
     alarm_event,
+    client_error,
     datadog_event,
     datadog_monitor,
     lambda_context,
@@ -75,7 +76,7 @@ def clients(mocker: MockerFixture) -> TriageClients:
         lambda_=FakeClient({"list_event_source_mappings": {"EventSourceMappings": []}}),
         sqs=FakeSqs(),
         kinesis=FakeClient(),
-        sts=FakeClient(),
+        sts=FakeClient({"get_caller_identity": {"Account": OWN_ACCOUNT}}),
         table=FakeTable(),
     )
     mocker.patch.object(triage_module, "triage_clients", return_value=built)
@@ -385,6 +386,32 @@ def test_alarm_without_a_trusted_account_or_from_another_region_is_refused(
     _triage({**alarm_event(), **change})
     [decision] = _refused(clients, capsys)
     assert decision["decision"] == "skipped_account"
+
+
+def test_signal_naming_an_account_is_refused_when_sts_cannot_tell_the_own_account(
+    clients: TriageClients, capsys: pytest.CaptureFixture[str], mocker: MockerFixture
+) -> None:
+    clients.sts.responses["get_caller_identity"] = client_error("AccessDenied")
+    info = mocker.spy(decisions_module.logger, "info")
+    assert handler(_batch(alarm_event()), None) == {"batchItemFailures": []}
+    assert _refused(clients, capsys) == [
+        {"env": "prod", "source": "cloudwatch", "decision": "skipped_account"}
+    ]
+    assert clients.cloudwatch.calls == []
+    [call] = [
+        call for call in info.call_args_list if call.args[0] == "dropped: account not investigated"
+    ]
+    assert call.kwargs["extra"]["reason"] == (
+        f"the agent's own account is unknown, so account {OWN_ACCOUNT} is not read"
+    )
+
+
+def test_own_account_outside_lambda_comes_from_sts(clients: TriageClients) -> None:
+    assert handler(_batch(alarm_event()), None) == {"batchItemFailures": []}
+    [work] = _jobs(clients)
+    assert work.account_id == OWN_ACCOUNT
+    assert work.keys == [FUNCTION_KEY]
+    assert clients.sts.operations() == ["get_caller_identity"]
 
 
 @pytest.mark.usefixtures("members")

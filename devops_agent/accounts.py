@@ -6,7 +6,8 @@ their alarm events to the agent's account and lend it a read-only role
 cross-checked with the alarm ARN; a Datadog signal's is the value of its monitor's
 ``DATADOG_ACCOUNT_TAG`` tag, else the agent's own. Triage refuses a signal whose account
 cannot be told, is not in ``ALLOWED_ACCOUNT_IDS`` when that is set, or is another account
-while no member role is configured, and one from another region.
+while no member role is configured, one that names an account while the agent's own is
+unknown, and one from another region.
 
 A member account's resource keys are scoped as ``<account id>|<key>`` (models.scoped_key),
 so findings, claims, cooldowns, links and remembered sources of two accounts never meet;
@@ -26,6 +27,7 @@ from typing import Any
 
 import boto3
 import botocore.session
+from aws_lambda_powertools import Logger
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
 from botocore.exceptions import ConnectionError as BotoConnectionError
@@ -33,6 +35,8 @@ from botocore.exceptions import ConnectionError as BotoConnectionError
 from devops_agent.config import Settings
 from devops_agent.models import SignalRef
 from devops_agent.tools import botocore_session
+
+logger = Logger(service="devops-agent", child=True)
 
 ACCOUNT_ID = re.compile(r"^\d{12}$")
 # AssumeRole's shortest session, and the longest a role assumed by another role's session
@@ -101,13 +105,33 @@ def function_partition(context: Any) -> str:
     return _arn_field(_function_arn(context), 1) or "aws"
 
 
-def own_account(context: Any, settings: Settings, sts: Any) -> str:
-    """The agent's account. With member accounts it must be known, so outside Lambda it
-    is read from STS; otherwise it may stay empty (unknown)."""
+# The agent's own account as STS names it outside Lambda, read once per process.
+_caller_account: dict[str, str] = {}
+
+
+def clear_caller_account() -> None:
+    _caller_account.clear()
+
+
+def own_account(context: Any, sts: Any) -> str:
+    """The agent's account: from the function ARN in Lambda, else from
+    sts:GetCallerIdentity on the agent's own client. Empty (unknown) when STS cannot
+    tell; a signal or job that names an account is then refused, never read with the
+    agent's own credentials."""
     account = function_account(context)
-    if account or not settings.multi_account:
+    if account:
         return account
-    return str(sts.get_caller_identity()["Account"])
+    if "account" not in _caller_account:
+        try:
+            found = str(sts.get_caller_identity().get("Account") or "")
+        except (ClientError, BotoCoreError) as exc:
+            logger.warning("own account unknown", extra={"error": type(exc).__name__})
+            return ""
+        if not ACCOUNT_ID.match(found):
+            logger.warning("own account unknown", extra={"error": "no account id"})
+            return ""
+        _caller_account["account"] = found
+    return _caller_account["account"]
 
 
 def is_member(account_id: str, own: str) -> bool:
@@ -147,6 +171,8 @@ def refusal(account_id: str, region: str, own: str, settings: Settings) -> str |
     """Why the agent will not investigate a signal from this account and region."""
     if region and region != settings.aws_region:
         return f"the signal is from {region}; the agent reads {settings.aws_region} only"
+    if account_id and not own:
+        return f"the agent's own account is unknown, so account {account_id} is not read"
     allowed = settings.allowed_account_ids
     if allowed and account_id not in allowed:
         return f"account {account_id or 'unknown'} is not in ALLOWED_ACCOUNT_IDS"
@@ -241,11 +267,16 @@ def open_session(
     seconds_left: float,
 ) -> AccountSession:
     """The session that reads ``account_id``: the agent's own credentials for its own
-    account (or an unknown one), the member role's for a member account.
+    account (or a job that names none), the member role's for a member account.
 
-    Raises AccountAccessError when the account is not allowed, no member role is
-    configured, or AssumeRole fails; it never falls back to the agent's own credentials.
+    Raises AccountAccessError when the job names an account while the agent's own is
+    unknown, the account is not allowed, no member role is configured, or AssumeRole
+    fails; it never falls back to the agent's own credentials.
     """
+    if account_id and not own:
+        raise AccountAccessError(
+            f"the agent's own account is unknown, so account {account_id} is not read"
+        )
     allowed = settings.allowed_account_ids
     if allowed and account_id not in allowed:
         raise AccountAccessError(f"account {account_id or 'unknown'} is not allowed")

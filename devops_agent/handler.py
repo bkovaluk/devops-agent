@@ -89,7 +89,7 @@ def read_session(
     agent's own credentials for its own account, the member role's for a member account."""
     return open_session(
         job.account_id,
-        own=own_account(context, settings, agent.sts),
+        own=own_account(context, agent.sts),
         settings=settings,
         sts=agent.sts,
         partition=function_partition(context),

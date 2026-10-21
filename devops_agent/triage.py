@@ -192,8 +192,8 @@ def triage_clients(region: str, table_name: str) -> TriageClients:
 
 @dataclass
 class _Accounts:
-    """The accounts of one invocation: the agent's own (empty when unknown outside
-    Lambda), and the alarm readers of each member account, opened on first use and kept
+    """The accounts of one invocation: the agent's own (empty when STS could not tell
+    it outside Lambda), and the alarm readers of each member account, opened on first use and kept
     for this invocation only."""
 
     clients: TriageClients
@@ -1376,7 +1376,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     accounts = _Accounts(
         clients=clients,
         settings=settings,
-        own=own_account(context, settings, clients.sts),
+        own=own_account(context, clients.sts),
         partition=function_partition(context),
         name=session_name("devops-agent-triage", str(getattr(context, "aws_request_id", ""))),
         seconds_left=seconds_left,

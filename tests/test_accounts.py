@@ -42,6 +42,7 @@ from tests.conftest import (
     OWN_ACCOUNT,
     FakeClient,
     alarm_event,
+    client_error,
     lambda_context,
     member_credentials,
     signing_key,
@@ -82,27 +83,53 @@ def test_without_a_function_arn_the_account_is_unknown(arn: str | None) -> None:
     assert function_partition(None) == "aws"
 
 
-def test_own_account_needs_no_call_in_lambda(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_own_account_needs_no_call_in_lambda() -> None:
     sts = FakeClient()
-    settings = configure(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read")
-    assert own_account(lambda_context(), settings, sts) == OWN
+    assert own_account(lambda_context(), sts) == OWN
     assert sts.calls == []
 
 
-def test_own_account_stays_unknown_outside_lambda_with_one_account(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("member_role", [None, "devops-agent-read"])
+def test_own_account_is_read_from_sts_outside_lambda_once_per_process(
+    monkeypatch: pytest.MonkeyPatch, member_role: str | None
 ) -> None:
-    sts = FakeClient()
-    assert own_account(None, configure(monkeypatch), sts) == ""
-    assert sts.calls == []
-
-
-def test_own_account_is_read_from_sts_outside_lambda_with_members(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    if member_role:
+        configure(monkeypatch, MEMBER_ROLE_NAME=member_role)
     sts = FakeClient({"get_caller_identity": {"Account": OWN}})
-    settings = configure(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read")
-    assert own_account(None, settings, sts) == OWN
+    assert own_account(None, sts) == OWN
+    assert own_account(lambda_context(None), sts) == OWN
+    assert sts.operations() == ["get_caller_identity"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [client_error("AccessDenied"), EndpointConnectionError(endpoint_url="https://sts"), {}],
+)
+def test_own_account_stays_unknown_when_sts_cannot_tell(response: Any) -> None:
+    sts = FakeClient({"get_caller_identity": response})
+    assert own_account(None, sts) == ""
+    assert own_account(None, sts) == ""
+    assert sts.operations() == ["get_caller_identity", "get_caller_identity"]
+
+
+def test_signal_naming_an_account_is_refused_while_the_own_account_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = configure(monkeypatch)
+    assert refusal(OWN, "us-east-1", "", settings) == (
+        f"the agent's own account is unknown, so account {OWN} is not read"
+    )
+    assert refusal("", "us-east-1", "", settings) is None
+
+
+def test_job_naming_an_account_gets_no_session_while_the_own_account_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sts = FakeClient()
+    with pytest.raises(AccountAccessError, match="own account is unknown") as raised:
+        _open(configure(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read"), sts, OWN, own="")
+    assert not raised.value.transient
+    assert sts.calls == []
 
 
 @pytest.mark.parametrize(
@@ -187,12 +214,6 @@ def test_account_outside_the_allow_list_is_refused(monkeypatch: pytest.MonkeyPat
 def test_member_account_without_a_member_role_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     reason = refusal(MEMBER, "us-east-1", OWN, configure(monkeypatch))
     assert reason == f"account {MEMBER} is not the agent's and MEMBER_ROLE_NAME is not set"
-
-
-def test_any_account_reads_as_the_agents_own_when_its_own_is_unknown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert refusal(MEMBER, "us-east-1", "", configure(monkeypatch)) is None
 
 
 # Settings

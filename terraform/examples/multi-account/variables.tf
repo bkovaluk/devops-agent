@@ -24,6 +24,7 @@ variable "organization_id" {
 variable "external_id" {
   description = "External id the agent sends and every member role requires."
   type        = string
+  sensitive   = true
 }
 
 variable "member_a_account_id" {
