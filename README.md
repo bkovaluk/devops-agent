@@ -59,12 +59,12 @@ storms and repeats from turning into many expensive runs. The investigator runs 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/triage-flow-dark.svg">
-  <img alt="Triage flow: a batch from the alarms queue is parsed and settled into signals with resource keys. A signal tagged DevOpsAgent=off becomes a skipped finding; one already open or closed within the cooldown counts as one more firing; one sharing a key with a running job or an earlier signal becomes a linked finding; in an alarm storm or with 5 or more jobs left in the batch the rest are grouped onto one incident job; a signal over its priority budget is deferred 15 minutes (P1 and P2) or skipped (P3 and P4). The rest are emitted to the work queue." src="docs/triage-flow-light.svg">
+  <img alt="Triage flow, left to right: signals from the alarms queue are parsed and settled, then pass five gates that run without a model: opted out, already open, shares a key with other work, part of a storm, over budget. A signal that stops at a gate leaves with a finding (skipped, repeat, linked, grouped or deferred); the rest are emitted to the work queue." src="docs/triage-flow-light.svg">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/investigator-flow-dark.svg">
-  <img alt="Investigator flow: a job from the work queue recalls up to 3 reviewed findings on the same resource, runs the code-only precheck, then loops: the model reasons and makes read-only tool calls until it calls report_finding. The finding is redacted, stored in DynamoDB, optionally published to SNS when critical or high, and the tool calls that returned data are remembered for next time." src="docs/investigator-flow-light.svg">
+  <img alt="Investigator flow, left to right: a job from the work queue recalls past reviewed findings and runs a code-only precheck, then enters the model loop: reason, read with read-only tools, and repeat until the model reports. The finding is redacted, stored, optionally notified, and the tool calls that returned data are remembered." src="docs/investigator-flow-light.svg">
 </picture>
 The full design is in [docs/architecture.md](docs/architecture.md).
 

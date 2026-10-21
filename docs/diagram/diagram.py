@@ -165,34 +165,34 @@ def write_both(draw, outdir, stem="architecture"):
             f.write(draw(theme) + "\n")
 
 
-# Flowchart shapes. A step is a numbered action, a decision a question the flow branches
-# on, an outcome what a branch produces.
-STEP_W, STEP_H = 480, 58
+# Flowchart shapes: a card is a step the code takes, a gate a question the flow branches
+# on, an exit where a branch leaves.
+CARD_W, CARD_H = 124, 58
 
 
-def step(cx, cy, n, title, sub, t, w=STEP_W):
-    x, y = cx - w / 2, cy - STEP_H / 2
+def card(cx, cy, title, sub, t, dashed=False):
+    x, y = cx - CARD_W / 2, cy - CARD_H / 2
+    dash = ' stroke-dasharray="5 4"' if dashed else ""
     return (
-        f'<rect x="{x}" y="{y}" width="{w}" height="{STEP_H}" rx="10" fill="{t["panel"]}" stroke="{t["border"]}" stroke-width="1.2"/>'
-        + text(
-            x + 18, cy - 4, str(n), t, size=12, fill="dim", weight=600, family=MONO, anchor="start"
-        )
-        + text(x + 42, cy - 4, title, t, size=13.5, weight=650, anchor="start")
-        + text(x + 42, cy + 14, sub, t, size=10.5, fill="muted", family=MONO, anchor="start")
+        f'<rect x="{x}" y="{y}" width="{CARD_W}" height="{CARD_H}" rx="12" fill="{t["panel"]}" '
+        f'stroke="{t["border"]}" stroke-width="1.3"{dash}/>'
+        + text(cx, cy - 3, title, t, size=13, weight=650)
+        + text(cx, cy + 15, sub, t, size=10.5, fill="muted")
     )
 
 
-def decision(cx, cy, question, t, w=STEP_W):
-    x, y = cx - w / 2, cy - 21
+def gate(cx, cy, question, t, r=27):
+    pts = f"{cx},{cy - r} {cx + r},{cy} {cx},{cy + r} {cx - r},{cy}"
     return (
-        f'<rect x="{x}" y="{y}" width="{w}" height="42" rx="21" fill="{t["lane"]}" stroke="{t["region"]}" stroke-width="1.3"/>'
-        + text(cx, cy + 4.5, question, t, size=12.5, weight=600)
+        f'<polygon points="{pts}" fill="{t["lane"]}" stroke="{t["region"]}" stroke-width="1.5" stroke-linejoin="round"/>'
+        + text(cx, cy + 5, "?", t, size=16, fill="region", weight=700)
+        + text(cx, cy - r - 12, question, t, size=12.5, weight=650)
     )
 
 
-def outcome(x, cy, label, cat, t):
-    w = len(label) * 6.7 + 26
+def exit_pill(cx, cy, label, t):
+    w = len(label) * 6.6 + 24
     return (
-        f'<rect x="{x}" y="{cy - 14}" width="{w}" height="28" rx="14" fill="{CAT[cat]}" opacity="0.92"/>'
-        + text(x + w / 2, cy + 4.5, label, t, size=11.5, fill="#ffffff", weight=600, family=MONO)
+        f'<rect x="{cx - w / 2}" y="{cy - 13}" width="{w}" height="26" rx="13" fill="{CAT["database"]}" opacity="0.92"/>'
+        + text(cx, cy + 4, label, t, size=11, fill="#ffffff", weight=600, family=MONO)
     )
