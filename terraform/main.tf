@@ -16,6 +16,9 @@ locals {
   # the package. The EventBridge rules read their filters from it.
   catalog = jsondecode(coalesce(var.catalog_json, file("${path.module}/../devops_agent/catalog.json")))
 
+  # Alarm names the rules never forward: the catalog's prefixes and the agent's own.
+  exclude_alarm_prefixes = distinct(concat(local.catalog.agent.exclude_alarm_prefixes, [var.name_prefix]))
+
   catalog_parameter_name = "/${var.name_prefix}/${var.environment}/catalog"
   catalog_parameter_arn  = "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${local.catalog_parameter_name}"
 

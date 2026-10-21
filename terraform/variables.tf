@@ -186,6 +186,57 @@ variable "run_token_budget" {
   default     = null
 }
 
+variable "account_hourly_budget" {
+  description = "With member_role_name set, investigations one account may use per UTC hour (ACCOUNT_HOURLY_BUDGET). Null keeps the code default of 5."
+  type        = number
+  default     = null
+}
+
+variable "account_daily_budget" {
+  description = "With member_role_name set, investigations one account may use per UTC day (ACCOUNT_DAILY_BUDGET). Null keeps the code default of 25."
+  type        = number
+  default     = null
+}
+
+variable "member_role_name" {
+  description = "Name of the read-only role terraform/member creates in every member account (MEMBER_ROLE_NAME). The agent assumes it to read a member account's alarm. Null reads only this account."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.member_role_name == null || can(regex("^[\\w+=,.@-]{1,64}$", var.member_role_name))
+    error_message = "member_role_name must be an IAM role name."
+  }
+}
+
+variable "member_external_id" {
+  description = "External id the agent sends when it assumes a member role (MEMBER_EXTERNAL_ID); the member roles' trust policies require it."
+  type        = string
+  default     = null
+}
+
+variable "allowed_account_ids" {
+  description = "Accounts the agent investigates (ALLOWED_ACCOUNT_IDS); signals from any other are refused, and the role may assume member roles in these only. Empty allows every account of the organization. List this account too when its own alarms are to be investigated."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.allowed_account_ids : can(regex("^[0-9]{12}$", id))])
+    error_message = "allowed_account_ids must be 12-digit account ids."
+  }
+}
+
+variable "organization_id" {
+  description = "AWS Organization id (o-...). When set, the module creates the central event bus member accounts forward their alarms to, accepting events from this organization only."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.organization_id == null || can(regex("^o-[a-z0-9]{10,32}$", var.organization_id))
+    error_message = "organization_id must be an organization id such as o-a1b2c3d4e5."
+  }
+}
+
 variable "extra_environment" {
   description = "Other environment variables from the README's Configuration tables, set on both functions. Variables the module sets itself take precedence."
   type        = map(string)

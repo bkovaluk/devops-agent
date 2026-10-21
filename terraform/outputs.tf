@@ -88,6 +88,16 @@ output "catalog_parameter_name" {
   value       = one(aws_ssm_parameter.catalog[*].name)
 }
 
+output "central_event_bus_arn" {
+  description = "ARN of the central event bus member accounts forward their alarms to; null without organization_id."
+  value       = one(aws_cloudwatch_event_bus.central[*].arn)
+}
+
+output "central_event_rule_arn" {
+  description = "ARN of the rule on the central event bus; null without organization_id."
+  value       = one(aws_cloudwatch_event_rule.central[*].arn)
+}
+
 output "datadog_event_rule_arn" {
   description = "ARN of the rule on the Datadog partner event bus; null without one."
   value       = one(aws_cloudwatch_event_rule.datadog[*].arn)

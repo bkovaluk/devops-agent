@@ -76,7 +76,11 @@ data "aws_iam_policy_document" "alarms_queue" {
     condition {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
-      values   = concat([aws_cloudwatch_event_rule.alarms.arn], aws_cloudwatch_event_rule.datadog[*].arn)
+      values = concat(
+        [aws_cloudwatch_event_rule.alarms.arn],
+        aws_cloudwatch_event_rule.central[*].arn,
+        aws_cloudwatch_event_rule.datadog[*].arn,
+      )
     }
   }
 }

@@ -6,8 +6,16 @@ backlog alarm on each queue, the findings table, the EventBridge rule that feeds
 CloudWatch alarms to triage, one execution role and its policies, an application
 inference profile per model with hourly token alarms, and a monthly Bedrock cost
 budget. Optionally it adds the Datadog partner event bus and rule that feed Datadog
-monitor alerts to triage, and an SSM parameter holding your catalog. It implements
+monitor alerts to triage, an SSM parameter holding your catalog, and, for many
+accounts, the central event bus member accounts forward their alarms to and the grant
+to assume their read-only roles. It implements
 [docs/terraform-contract.md](../docs/terraform-contract.md).
+
+[`member/`](member) is the module every member account of a multi-account deployment
+deploys once: the read-only role the agent assumes there and the rule that forwards its
+alarms. [`modules/shared`](modules/shared) holds what the agent's role and the member
+roles share (the managed policy, the read grants, the deny list and the alarm event
+pattern), so the two cannot drift apart.
 
 The module takes a prebuilt zip. Build it from the repo root with `just build`, which
 writes `dist/devops-agent.zip`. It also reads `../devops_agent/catalog.json` for the
@@ -39,7 +47,9 @@ module "devops_agent" {
 }
 ```
 
-[examples/basic](examples/basic) is a complete root module with a provider block.
+[examples/basic](examples/basic) is a complete root module with a provider block;
+[examples/multi-account](examples/multi-account) deploys a tooling account and two
+member accounts, with a provider alias per account.
 
 ## Requirements
 
@@ -80,16 +90,22 @@ module "devops_agent" {
 | `daily_budget` | `number` | `null` | `DAILY_BUDGET`; null keeps the code default |
 | `daily_token_budget` | `number` | `null` | `DAILY_TOKEN_BUDGET`; null keeps the code default |
 | `run_token_budget` | `number` | `null` | `RUN_TOKEN_BUDGET`; null keeps the code default |
+| `account_hourly_budget` | `number` | `null` | `ACCOUNT_HOURLY_BUDGET`; null keeps the code default |
+| `account_daily_budget` | `number` | `null` | `ACCOUNT_DAILY_BUDGET`; null keeps the code default |
+| `member_role_name` | `string` | `null` | `MEMBER_ROLE_NAME` on both functions and `sts:AssumeRole` on that role in member accounts; null reads this account only |
+| `member_external_id` | `string` | `null` | `MEMBER_EXTERNAL_ID` on both functions; the member roles require it |
+| `allowed_account_ids` | `list(string)` | `[]` | `ALLOWED_ACCOUNT_IDS` on both functions, and the only accounts whose member role may be assumed; empty allows every account. List this account too to investigate its own alarms |
+| `organization_id` | `string` | `null` | creates the central event bus, accepting events from this organization only, and its rule to the alarms queue |
 | `extra_environment` | `map(string)` | `{}` | any other variable from the README's Configuration tables, set on both functions; the module's own variables take precedence |
 | `log_retention_days` | `number` | `400` | retention of both log groups |
 | `alarm_actions` | `list(string)` | `[]` | actions for the dead-letter, backlog and token alarms; its SNS topics also get the budget's notifications |
 | `tags` | `map(string)` | `{}` | tags on every resource |
 
 Unset optional values are left out of the Lambda environment. The model, prompt and
-GitHub settings go on the investigator only; the Datadog settings and
-`CATALOG_PARAMETER` on both, since triage verifies Datadog signals and reads the
-catalog; the budgets on triage only, except `run_token_budget`, which is per
-investigation.
+GitHub settings go on the investigator only; the Datadog settings, the member account
+settings and `CATALOG_PARAMETER` on both, since triage verifies Datadog signals, reads
+member accounts' alarms and reads the catalog; the budgets on triage only, except
+`run_token_budget`, which is per investigation.
 
 ## Outputs
 
@@ -105,6 +121,7 @@ investigation.
 | `role_arn` | the execution role both functions run as |
 | `event_rule_arn` | the CloudWatch alarm EventBridge rule |
 | `datadog_event_rule_arn` | the Datadog partner bus rule, or null |
+| `central_event_bus_arn`, `central_event_rule_arn` | the central event bus and its rule, or null without `organization_id` |
 | `model_arns` | the primary and fallback model ARNs the investigator calls |
 | `catalog_parameter_name` | the catalog parameter, or null |
 
@@ -147,3 +164,40 @@ reads no parameter. With it, the module stores the document in the String parame
 cases the CloudWatch alarm rule excludes the catalog's `agent.exclude_alarm_prefixes`
 plus `name_prefix`, and the Datadog rule matches its `agent.datadog_monitor_tags`. The
 document's shape is in the repo README's Catalog section.
+
+## Many accounts
+
+Set `organization_id`, `member_role_name`, `member_external_id` and optionally
+`allowed_account_ids` on this module in the tooling account, then deploy
+[`member/`](member) in every member account, in the same region:
+
+```hcl
+module "devops_agent_member" {
+  source = "github.com/<owner>/devops-agent//terraform/member"
+
+  providers = { aws = aws.member }
+
+  investigator_role_arn = module.devops_agent.role_arn
+  central_event_bus_arn = module.devops_agent.central_event_bus_arn
+  role_name             = "devops-agent-read"
+  external_id           = var.external_id
+}
+```
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `investigator_role_arn` | `string` | required | the agent module's `role_arn`; the only principal the read-only role trusts |
+| `central_event_bus_arn` | `string` | required | the agent module's `central_event_bus_arn` |
+| `role_name` | `string` | `"devops-agent-read"` | the read-only role's name; must equal `member_role_name` |
+| `external_id` | `string` | `null` | the external id the role requires; must equal `member_external_id` |
+| `name_prefix` | `string` | `"devops-agent"` | the forwarding rule and its role, and an excluded alarm name prefix; must equal the agent's `name_prefix` |
+| `catalog_json` | `string` | `null` | the agent's catalog, when it sets its own excluded alarm prefixes |
+| `tags` | `map(string)` | `{}` | tags on every resource |
+
+| Output | Description |
+|--------|-------------|
+| `role_arn`, `role_name` | the read-only role |
+| `forward_rule_arn` | the rule that forwards the account's alarms to the central bus |
+
+The member module reads `../../devops_agent/catalog.json` like this module does, so use
+it from a checkout of the whole repo too.

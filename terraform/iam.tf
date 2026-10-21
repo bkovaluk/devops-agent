@@ -21,6 +21,14 @@ locals {
   ]
 
   agent_queue_arns = [aws_sqs_queue.alarms.arn, aws_sqs_queue.work.arn]
+
+  # The member accounts' read-only roles: in every account of the organization, or only
+  # in the allowed ones.
+  member_role_accounts = length(var.allowed_account_ids) == 0 ? ["*"] : var.allowed_account_ids
+  member_role_arns = var.member_role_name == null ? [] : [
+    for account in local.member_role_accounts :
+    "arn:${local.partition}:iam::${account}:role/${var.member_role_name}"
+  ]
 }
 
 data "aws_iam_policy_document" "assume_role" {
@@ -42,12 +50,22 @@ resource "aws_iam_role" "lambda" {
   tags = var.tags
 }
 
-# AWS's own policy for its DevOps Agent: Describe, List and Get across most services,
-# kept current by AWS, for the generic aws_call tool. The deny policy below still wins; it
-# blocks the reads in this policy that return data or secrets.
+# The read access the agent's role shares with the member accounts' read-only roles: the
+# managed policy, the read grants and the deny list.
+module "shared" {
+  source = "./modules/shared"
+
+  exclude_alarm_prefixes = local.exclude_alarm_prefixes
+  catalog_parameter_arn  = var.catalog_json == null ? null : local.catalog_parameter_arn
+  agent_queue_arns       = local.agent_queue_arns
+  assumable_role_arns    = local.member_role_arns
+}
+
+# AWS's own policy for its DevOps Agent, for the generic aws_call tool. The deny policy
+# below still wins; it blocks the reads in this policy that return data or secrets.
 resource "aws_iam_role_policy_attachment" "aws_view" {
   role       = aws_iam_role.lambda.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/AIDevOpsAgentAccessPolicy"
+  policy_arn = module.shared.managed_policy_arn
 }
 
 data "aws_iam_policy_document" "logs" {
@@ -70,128 +88,10 @@ resource "aws_iam_role_policy" "logs" {
   policy = data.aws_iam_policy_document.logs.json
 }
 
-# The operations the curated tools and the context bundle call. These APIs either take
-# no resource ARN or are called on whatever resource an alarm watches, so they are
-# granted on all resources unless noted.
-data "aws_iam_policy_document" "read" {
-  statement {
-    sid = "ReadAlarmsAndMetrics"
-    actions = [
-      "cloudwatch:DescribeAlarms",
-      "cloudwatch:DescribeAlarmHistory",
-      "cloudwatch:GetMetricData",
-      "cloudwatch:ListTagsForResource",
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    sid = "ReadLogsInsights"
-    actions = [
-      "logs:StartQuery",
-      "logs:GetQueryResults",
-      "logs:StopQuery",
-      "logs:DescribeLogGroups",
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    sid       = "ReadCloudTrail"
-    actions   = ["cloudtrail:LookupEvents"]
-    resources = ["*"]
-  }
-
-  statement {
-    sid = "InspectServices"
-    actions = [
-      "lambda:ListEventSourceMappings",
-      "sqs:GetQueueUrl",
-      "sqs:GetQueueAttributes",
-      "kinesis:DescribeStreamSummary",
-      "kinesis:ListStreamConsumers",
-      "rds:DescribeDBClusters",
-      "rds:DescribeDBInstances",
-      "rds:DescribeEvents",
-      "es:DescribeDomain",
-      "es:DescribeDomainHealth",
-      "elasticloadbalancing:DescribeLoadBalancers",
-      "elasticloadbalancing:DescribeTargetGroups",
-      "elasticloadbalancing:DescribeTargetHealth",
-      "elasticache:DescribeReplicationGroups",
-      "elasticache:DescribeCacheClusters",
-      "states:DescribeStateMachine",
-      "states:ListExecutions",
-      "states:ListStateMachines",
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    sid       = "InspectEksClusters"
-    actions   = ["eks:DescribeCluster", "eks:ListNodegroups", "eks:DescribeNodegroup"]
-    resources = ["*"]
-  }
-
-  # EC2 alarms name an instance id; the agent reads its type and tags to tell an EKS node
-  # from a plain host.
-  statement {
-    sid       = "DescribeInstances"
-    actions   = ["ec2:DescribeInstances"]
-    resources = ["*"]
-  }
-
-  # Error logs name a bucket and key; the agent checks whether the key exists and its
-  # version history. Listing only: object reads stay denied below.
-  statement {
-    sid = "ListS3Keys"
-    actions = [
-      "s3:ListBucket",
-      "s3:ListBucketVersions",
-      "s3:GetBucketVersioning",
-    ]
-    resources = ["arn:${local.partition}:s3:::*"]
-  }
-
-  # Time-of-day alarms: which EventBridge rules and Scheduler schedules fired.
-  statement {
-    sid = "ReadScheduledJobs"
-    actions = [
-      "events:ListRules",
-      "events:ListTargetsByRule",
-      "scheduler:ListSchedules",
-      "scheduler:GetSchedule",
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    sid       = "InspectPerformanceInsights"
-    actions   = ["pi:GetResourceMetrics"]
-    resources = ["arn:${local.partition}:pi:${local.region}:${local.account_id}:metrics/rds/*"]
-  }
-
-  statement {
-    sid       = "InspectApiStages"
-    actions   = ["apigateway:GET"]
-    resources = ["arn:${local.partition}:apigateway:${local.region}::/apis/*/stages*"]
-  }
-
-  dynamic "statement" {
-    for_each = var.catalog_json == null ? [] : [local.catalog_parameter_arn]
-
-    content {
-      sid       = "ReadCatalog"
-      actions   = ["ssm:GetParameter"]
-      resources = [statement.value]
-    }
-  }
-}
-
 resource "aws_iam_role_policy" "read" {
   name   = "read"
   role   = aws_iam_role.lambda.id
-  policy = data.aws_iam_policy_document.read.json
+  policy = module.shared.read_policy_json
 }
 
 data "aws_iam_policy_document" "bedrock" {
@@ -273,124 +173,37 @@ data "aws_iam_policy_document" "own_resources" {
   }
 }
 
+# Reaching member accounts. The external id is not a condition here: callers cannot be
+# made to send one by their own policy, so each member role's trust policy requires it.
+data "aws_iam_policy_document" "member_roles" {
+  count = var.member_role_name == null ? 0 : 1
+
+  statement {
+    sid       = "AssumeMemberReadRoles"
+    actions   = ["sts:AssumeRole"]
+    resources = local.member_role_arns
+  }
+}
+
+resource "aws_iam_role_policy" "member_roles" {
+  count = var.member_role_name == null ? 0 : 1
+
+  name   = "member-roles"
+  role   = aws_iam_role.lambda.id
+  policy = data.aws_iam_policy_document.member_roles[0].json
+}
+
 resource "aws_iam_role_policy" "own_resources" {
   name   = "own-resources"
   role   = aws_iam_role.lambda.id
   policy = data.aws_iam_policy_document.own_resources.json
 }
 
-# A backstop: nothing above grants these, and aws_guard.py refuses the same operations
-# before they reach AWS. The Lambda configuration reads would return the Datadog and
-# GitHub keys in plaintext. kms:Decrypt stays allowed by omission because Lambda decrypts
-# the functions' environment variables as this role.
-data "aws_iam_policy_document" "deny" {
-  statement {
-    sid    = "DenySecretReadsAndIdentityChanges"
-    effect = "Deny"
-    actions = [
-      "secretsmanager:GetSecretValue",
-      "secretsmanager:BatchGetSecretValue",
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "lambda:GetFunctionConfiguration",
-      "lambda:GetFunction",
-      "lambda:ListFunctions",
-      "ec2:GetPasswordData",
-      "ecs:DescribeTaskDefinition",
-      "states:DescribeExecution",
-      "states:GetExecutionHistory",
-      "kinesis:GetRecords",
-      "kinesis:GetShardIterator",
-      "iam:*",
-      "sts:AssumeRole",
-      "sts:GetFederationToken",
-      "sts:GetSessionToken",
-    ]
-    resources = ["*"]
-  }
-
-  # Parameters can hold credentials. The one the agent may read is its catalog.
-  statement {
-    sid    = "DenySsmReadsExceptCatalog"
-    effect = "Deny"
-    actions = [
-      "ssm:GetParameter",
-      "ssm:GetParameters",
-      "ssm:GetParametersByPath",
-      "ssm:GetParameterHistory",
-    ]
-    not_resources = [local.catalog_parameter_arn]
-  }
-
-  # Reads AIDevOpsAgentAccessPolicy grants that return user data, code, command output,
-  # configuration contents, environment variables, arguments or credentials, and its one
-  # write. aws_guard.py blocks the same operations.
-  statement {
-    sid    = "DenyDataReadsInAwsViewPolicy"
-    effect = "Deny"
-    actions = [
-      "ec2:DescribeInstanceAttribute",
-      "ec2:DescribeLaunchTemplateVersions",
-      "ec2:DescribeVpnConnections",
-      "ec2:DescribeVerifiedAccessTrustProviders",
-      "autoscaling:DescribeLaunchConfigurations",
-      "lambda:GetLayerVersion",
-      "lambda:ListVersionsByFunction",
-      "ssm:GetCommandInvocation",
-      "ssm:ListCommandInvocations",
-      "ssm:ListCommands",
-      "ssm:GetDocument",
-      "appconfig:GetHostedConfigurationVersion",
-      "cloudformation:GetTemplate",
-      "cloudformation:DescribeStackResourceDrifts",
-      "cloudfront:GetFunction",
-      "datapipeline:GetPipelineDefinition",
-      "amplify:GetApp",
-      "amplify:GetBranch",
-      "elasticbeanstalk:DescribeConfigurationSettings",
-      "airflow:GetEnvironment",
-      "glue:GetJob",
-      "glue:GetJobs",
-      "glue:BatchGetJobs",
-      "glue:GetTrigger",
-      "glue:ListStatements",
-      "sagemaker:DescribeModel",
-      "sagemaker:DescribeTrainingJob",
-      "sagemaker:DescribeProcessingJob",
-      "sagemaker:DescribeTransformJob",
-      "sagemaker:DescribePipeline",
-      "sagemaker:DescribePipelineDefinitionForExecution",
-      "sagemaker:DescribeOptimizationJob",
-      "mq:DescribeConfigurationRevision",
-      "eks:AccessKubernetesApi",
-      "support:CreateCase",
-    ]
-    resources = ["*"]
-  }
-
-  # apigateway:GET covers every REST read; these paths return API key values.
-  statement {
-    sid     = "DenyApiKeyValues"
-    effect  = "Deny"
-    actions = ["apigateway:GET"]
-    resources = [
-      "arn:${local.partition}:apigateway:*::/apikeys",
-      "arn:${local.partition}:apigateway:*::/apikeys/*",
-      "arn:${local.partition}:apigateway:*::/usageplans/*/keys",
-      "arn:${local.partition}:apigateway:*::/usageplans/*/keys/*",
-    ]
-  }
-
-  statement {
-    sid           = "DenyQueueReadsOutsideAgentQueues"
-    effect        = "Deny"
-    actions       = ["sqs:ReceiveMessage"]
-    not_resources = local.agent_queue_arns
-  }
-}
-
+# The explicit deny list, shared with the member accounts' read-only roles. Nothing the
+# role is granted covers these, and aws_guard.py refuses the same operations before they
+# reach AWS.
 resource "aws_iam_role_policy" "deny" {
   name   = "deny"
   role   = aws_iam_role.lambda.id
-  policy = data.aws_iam_policy_document.deny.json
+  policy = module.shared.deny_policy_json
 }

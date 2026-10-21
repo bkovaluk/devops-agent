@@ -1,13 +1,16 @@
 locals {
   # Both functions: triage verifies Datadog signals with the same keys the investigator's
-  # Datadog tools use.
+  # Datadog tools use, and reads a member account's alarm through the same role.
   shared_optional = {
-    SLACK_TOPIC_ARN   = var.notifications_topic_arn
-    SLACK_CHANNEL     = var.notifications_channel == "" ? null : var.notifications_channel
-    CATALOG_PARAMETER = var.catalog_json == null ? null : aws_ssm_parameter.catalog[0].name
-    DD_API_KEY        = var.datadog_api_key
-    DATADOG_APP_KEY   = var.datadog_app_key
-    DATADOG_SITE      = var.datadog_site
+    SLACK_TOPIC_ARN     = var.notifications_topic_arn
+    SLACK_CHANNEL       = var.notifications_channel == "" ? null : var.notifications_channel
+    CATALOG_PARAMETER   = var.catalog_json == null ? null : aws_ssm_parameter.catalog[0].name
+    DD_API_KEY          = var.datadog_api_key
+    DATADOG_APP_KEY     = var.datadog_app_key
+    DATADOG_SITE        = var.datadog_site
+    MEMBER_ROLE_NAME    = var.member_role_name
+    MEMBER_EXTERNAL_ID  = var.member_external_id
+    ALLOWED_ACCOUNT_IDS = length(var.allowed_account_ids) == 0 ? null : join(",", var.allowed_account_ids)
   }
 
   shared_environment = merge(
@@ -22,9 +25,11 @@ locals {
   )
 
   triage_optional = {
-    HOURLY_BUDGET      = var.hourly_budget
-    DAILY_BUDGET       = var.daily_budget
-    DAILY_TOKEN_BUDGET = var.daily_token_budget
+    HOURLY_BUDGET         = var.hourly_budget
+    DAILY_BUDGET          = var.daily_budget
+    DAILY_TOKEN_BUDGET    = var.daily_token_budget
+    ACCOUNT_HOURLY_BUDGET = var.account_hourly_budget
+    ACCOUNT_DAILY_BUDGET  = var.account_daily_budget
   }
 
   triage_environment = merge(

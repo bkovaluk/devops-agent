@@ -22,4 +22,6 @@ evals/cases/*.json
 
 # A module does not pin providers; examples may.
 terraform/.terraform.lock.hcl
+terraform/member/.terraform.lock.hcl
+terraform/modules/*/.terraform.lock.hcl
 .token-optimizer/
