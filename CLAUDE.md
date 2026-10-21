@@ -22,7 +22,7 @@ Guidance for coding agents and contributors working in this repo.
 - A tool the IAM role needs a new action for gets it in `terraform/iam.tf` and in
   `docs/terraform-contract.md`.
 - After changing the deployment shape, update `docs/diagram/architecture.py` and run
-  `make diagram`.
+  `just diagram`.
 
 Before a change is done, run:
 

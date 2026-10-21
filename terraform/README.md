@@ -9,7 +9,7 @@ budget. Optionally it adds the Datadog partner event bus and rule that feed Data
 monitor alerts to triage, and an SSM parameter holding your catalog. It implements
 [docs/terraform-contract.md](../docs/terraform-contract.md).
 
-The module takes a prebuilt zip. Build it from the repo root with `make build`, which
+The module takes a prebuilt zip. Build it from the repo root with `just build`, which
 writes `dist/devops-agent.zip`. It also reads `../devops_agent/catalog.json` for the
 EventBridge filters when `catalog_json` is not set, so use it from a checkout of the
 whole repo (a `git::` or `github.com/...//terraform` source fetches the whole repo).

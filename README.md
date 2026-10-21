@@ -366,7 +366,7 @@ What it takes:
 ### Build
 
 ```bash
-make build
+just build
 ```
 
 `scripts/build.sh` installs the locked runtime dependencies as manylinux x86_64 wheels
@@ -477,8 +477,8 @@ uv run mypy devops_agent evals
 uv run pytest -q
 ```
 
-`make diagram` re-renders `docs/architecture-dark.svg` and `docs/architecture-light.svg`
-from `docs/diagram/architecture.py`.
+`just diagram` re-renders `docs/architecture-*.svg` and `docs/multi-account-*.svg`
+from `docs/diagram/architecture.py` and `docs/diagram/multi_account.py`.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull request.
 

@@ -11,7 +11,7 @@ variable "environment" {
 }
 
 variable "package_path" {
-  description = "Path of the Lambda zip built by make build."
+  description = "Path of the Lambda zip built by just build."
   type        = string
   default     = "../../../dist/devops-agent.zip"
 }
