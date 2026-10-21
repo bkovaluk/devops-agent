@@ -45,9 +45,17 @@ MIN_SESSION_SECONDS = 900
 MAX_SESSION_SECONDS = 3600
 MAX_SESSION_NAME_CHARS = 64
 _SESSION_NAME_CHARS = re.compile(r"[^\w+=,.@-]")
-AWS_CALL_CLIENT_CONFIG = Config(
-    connect_timeout=5, read_timeout=20, retries={"max_attempts": 2, "mode": "standard"}
-)
+
+
+def aws_call_client_config() -> Config:
+    """Short timeouts and two attempts for aws_call clients.
+
+    A fresh Config each time: botocore rewrites a config's retries dict in place when it
+    builds a client, so a shared instance would change under later readers.
+    """
+    return Config(
+        connect_timeout=5, read_timeout=20, retries={"max_attempts": 2, "mode": "standard"}
+    )
 
 
 # STS errors that may clear on their own, besides a bare 5xx status as the code. Every
@@ -234,7 +242,7 @@ class AccountSession:
     def _build(self, service: str, *, aws_call: bool) -> Any:
         key = (service, aws_call)
         if key not in self._clients:
-            config = AWS_CALL_CLIENT_CONFIG if aws_call else None
+            config = aws_call_client_config() if aws_call else None
             self._clients[key] = self._session.client(
                 service, region_name=self.region, config=config
             )

@@ -332,15 +332,15 @@ def test_account_session_builds_each_client_once() -> None:
     assert account.client("ec2") is account.client("ec2")
     assert account.aws_call_client("ec2") is account.aws_call_client("ec2")
     calls = session.client.call_args_list
-    assert [(call.args[0], call.kwargs["config"]) for call in calls] == [
-        ("ec2", None),
-        ("ec2", accounts.AWS_CALL_CLIENT_CONFIG),
-    ]
+    assert [call.args[0] for call in calls] == ["ec2", "ec2"]
+    assert calls[0].kwargs["config"] is None
+    assert calls[1].kwargs["config"].retries == {"max_attempts": 2, "mode": "standard"}
     assert all(call.kwargs["region_name"] == "us-east-1" for call in calls)
 
 
 def test_aws_call_clients_have_short_timeouts_and_two_attempts() -> None:
-    config = accounts.AWS_CALL_CLIENT_CONFIG
+    config = accounts.aws_call_client_config()
+    assert config is not accounts.aws_call_client_config()
     assert config.connect_timeout == 5
     assert config.read_timeout == 20
     assert config.retries == {"max_attempts": 2, "mode": "standard"}
