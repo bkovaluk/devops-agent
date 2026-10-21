@@ -442,6 +442,10 @@ def test_refused_assume_role_names_the_role_and_the_code(monkeypatch: pytest.Mon
     [
         ("Throttling", True),
         ("ServiceUnavailable", True),
+        ("500", True),
+        ("503", True),
+        ("5030", False),
+        ("403", False),
         ("RegionDisabledException", False),
         ("MalformedPolicyDocument", False),
         ("PackedPolicyTooLarge", False),

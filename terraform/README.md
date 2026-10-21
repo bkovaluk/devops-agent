@@ -92,6 +92,7 @@ member accounts, with a provider alias per account.
 | `run_token_budget` | `number` | `null` | `RUN_TOKEN_BUDGET`; null keeps the code default |
 | `account_hourly_budget` | `number` | `null` | `ACCOUNT_HOURLY_BUDGET`; null keeps the code default |
 | `account_daily_budget` | `number` | `null` | `ACCOUNT_DAILY_BUDGET`; null keeps the code default |
+| `account_p1_daily_overflow` | `number` | `null` | `ACCOUNT_P1_DAILY_OVERFLOW`; null keeps the code default |
 | `member_role_name` | `string` | `null` | `MEMBER_ROLE_NAME` on both functions and `sts:AssumeRole` on that role in member accounts; null reads this account only |
 | `member_external_id` | `string` (sensitive) | `null` | `MEMBER_EXTERNAL_ID` on both functions; set it, and the member roles require it |
 | `allowed_account_ids` | `list(string)` | `[]` | `ALLOWED_ACCOUNT_IDS` on both functions, and the only accounts whose member role may be assumed. Recommended. Empty refuses no signal by account, and the role may assume `member_role_name` in any account of `organization_id`, or in any account at all without it. List this account too to investigate its own alarms |

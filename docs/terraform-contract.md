@@ -31,7 +31,7 @@ is `${environment}`.
 | `member_external_id` | `null` (sensitive) | `MEMBER_EXTERNAL_ID` on both functions |
 | `allowed_account_ids` | `[]` | `ALLOWED_ACCOUNT_IDS` on both functions, and the accounts the `sts:AssumeRole` grant names (any account when empty) |
 | `organization_id` | `null` | the central event bus, its organization-only policy and its rule; with `member_role_name`, the organization boundary on `sts:AssumeRole` |
-| `account_hourly_budget`, `account_daily_budget` | `null` | `ACCOUNT_HOURLY_BUDGET`, `ACCOUNT_DAILY_BUDGET` on triage |
+| `account_hourly_budget`, `account_daily_budget`, `account_p1_daily_overflow` | `null` | `ACCOUNT_HOURLY_BUDGET`, `ACCOUNT_DAILY_BUDGET`, `ACCOUNT_P1_DAILY_OVERFLOW` on triage |
 | `extra_environment` | `{}` | any other variable in the tables below (budgets, throttles, steps, log level) |
 | `alarm_actions` | `[]` | the queue and token alarms, and the budget's notifications (its SNS topics) |
 | `tags` | `{}` | all resources |

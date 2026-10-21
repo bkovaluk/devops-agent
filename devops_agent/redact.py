@@ -22,17 +22,26 @@ _KEY_NAMES = (
     "x-api-key|api_key|api-key|apikey|authorization|auth|credentials|credential"
     "|passphrase|password|passwd|pass|pwd|secret|token"
 )
+# A quote, or a backslash-escaped one inside a JSON document embedded in a string.
+_QUOTE = r"\\?[\"']"
 # A quoted value is redacted to its closing quote, or to the end of the line when cut.
 _KEY_VALUE = re.compile(
-    rf"(?i)(?P<key>{_KEY_NAMES})(?P<sep>[\"']?\s*[=:]\s*)"
-    r"(?:(?P<open>[\"'])(?:(?!(?P=open))[^\n])*(?P<close>(?P=open))?"
+    rf"(?i)(?P<key>{_KEY_NAMES})(?P<sep>(?:{_QUOTE})?\s*[=:]\s*)"
+    rf"(?:(?P<open>{_QUOTE})(?:(?!(?P=open))[^\n])*(?P<close>(?P=open))?"
     r"|(?!(?i:bearer|basic)\s)[^\s\"',;&}]+)"
 )
-# A Cookie or Set-Cookie header carries session tokens among its pairs, so its whole
-# value goes: to the closing quote when quoted, else to the end of the line or string.
+# Cookie, Set-Cookie and cookies values carry session tokens among their pairs, so the
+# whole value goes: to the closing quote when quoted, a one-line list to its closing
+# bracket, else to the end of the line or string.
 _COOKIE_HEADER = re.compile(
-    r"(?i)\b(?P<key>(?:set-)?cookie)(?P<sep>[\"']?\s*[=:]\s*)"
-    r"(?:(?P<open>[\"'])(?:(?!(?P=open))[^\n])*(?P<close>(?P=open))?|[^\r\n\"]+)"
+    rf"(?i)\b(?P<key>(?:set-)?cookies?)(?P<sep>(?:{_QUOTE})?\s*[=:]\s*)"
+    rf"(?:(?P<open>{_QUOTE})(?:(?!(?P=open))[^\n])*(?P<close>(?P=open))?"
+    r"|(?P<list>\[)[^\]\n]*(?P<end>\])?|[^\r\n]+)"
+)
+# A header as a name/value object, {"name": "Cookie", "value": "..."}, in any case.
+_COOKIE_FIELD = re.compile(
+    rf"(?i)(?P<head>(?P<q>{_QUOTE})name(?P=q)\s*:\s*(?P=q)(?:set-)?cookies?(?P=q)\s*,\s*"
+    r"(?P=q)value(?P=q)\s*:\s*(?P=q))(?:(?!(?P=q))[^\n])*"
 )
 _PREFIXED_TOKEN = re.compile(
     r"\b(?:xox[abprs]-[A-Za-z0-9-]+|gh[pousr]_[A-Za-z0-9]{36,}|sk-[A-Za-z0-9_-]{20,})"
@@ -75,6 +84,13 @@ def _redact_key_value(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{opening}{REDACTED}{closing}"
 
 
+def _redact_cookie(match: re.Match[str]) -> str:
+    if match.group("list"):
+        closing = match.group("end") or ""
+        return f"{match.group('key')}{match.group('sep')}[{REDACTED}{closing}"
+    return _redact_key_value(match)
+
+
 def redact(text: str) -> str:
     """Replace credential-shaped substrings with [redacted]."""
     text = _PEM_PRIVATE_KEY.sub(REDACTED, text)
@@ -82,7 +98,8 @@ def redact(text: str) -> str:
     text = _URL_USERINFO.sub(rf"\g<1>{REDACTED}@", text)
     text = _PREFIXED_TOKEN.sub(REDACTED, text)
     text = _AUTH_SCHEME.sub(rf"\g<1>{REDACTED}", text)
-    text = _COOKIE_HEADER.sub(_redact_key_value, text)
+    text = _COOKIE_FIELD.sub(rf"\g<head>{REDACTED}", text)
+    text = _COOKIE_HEADER.sub(_redact_cookie, text)
     text = _KEY_VALUE.sub(_redact_key_value, text)
     text = _HEX_KEY.sub(REDACTED, text)
     return _BASE64_RUN.sub(_redact_base64, text)

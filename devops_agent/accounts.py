@@ -50,9 +50,10 @@ AWS_CALL_CLIENT_CONFIG = Config(
 )
 
 
-# STS errors that may clear on their own. Every other refusal (AccessDenied from the
-# role's trust policy or because the role does not exist, a malformed or oversized
-# policy, a region disabled for STS) stands until someone changes the account.
+# STS errors that may clear on their own, besides a bare 5xx status as the code. Every
+# other refusal (AccessDenied from the role's trust policy or because the role does not
+# exist, a malformed or oversized policy, a region disabled for STS) stands until
+# someone changes the account.
 TRANSIENT_STS_ERRORS = frozenset(
     {
         "Throttling",
@@ -68,6 +69,13 @@ TRANSIENT_STS_ERRORS = frozenset(
         "IDPCommunicationError",
     }
 )
+
+
+_SERVER_ERROR_CODE = re.compile(r"^5\d\d$")
+
+
+def _transient_code(code: str) -> bool:
+    return code in TRANSIENT_STS_ERRORS or bool(_SERVER_ERROR_CODE.match(code))
 
 
 class AccountAccessError(Exception):
@@ -244,7 +252,7 @@ def _assume(sts: Any, arn: str, name: str, seconds: int, external_id: str | None
         raise AccountAccessError(
             f"AssumeRole of {arn} failed ({code})",
             code=code,
-            transient=code in TRANSIENT_STS_ERRORS,
+            transient=_transient_code(code),
         ) from None
     except BotoCoreError as exc:
         code = type(exc).__name__

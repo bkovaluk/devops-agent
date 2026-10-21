@@ -63,9 +63,64 @@ def test_key_value_secrets(text: str, expected: str) -> None:
         ('{"cookie": "session=abc; csrf=def", "n": 1}', f'{{"cookie": "{REDACTED}", "n": 1}}'),
         ('headers={"Cookie":"a=b; c=d"}', f'headers={{"Cookie":"{REDACTED}"}}'),
         ("GET / cookie=sid=1; x=2", f"GET / cookie={REDACTED}"),
+        ('Cookie: sid="abc"; theme=dark', f"Cookie: {REDACTED}"),
+        ('Cookie: a=1 "quoted" b=2\nnext', f"Cookie: {REDACTED}\nnext"),
     ],
 )
 def test_cookie_header_values(text: str, expected: str) -> None:
+    assert redact(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            '[{"name": "Cookie", "value": "sid=abc; csrf=def"}, {"name": "Host", "value": "x"}]',
+            f'[{{"name": "Cookie", "value": "{REDACTED}"}}, {{"name": "Host", "value": "x"}}]',
+        ),
+        (
+            '{"Name":"set-cookie","Value":"sid=abc; Path=/"}',
+            f'{{"Name":"set-cookie","Value":"{REDACTED}"}}',
+        ),
+        (
+            '{\\"name\\":\\"COOKIE\\",\\"value\\":\\"sid=abc\\"}',
+            f'{{\\"name\\":\\"COOKIE\\",\\"value\\":\\"{REDACTED}\\"}}',
+        ),
+    ],
+)
+def test_cookie_name_value_objects(text: str, expected: str) -> None:
+    assert redact(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            '{"Set-Cookie": ["sid=abc; Path=/", "csrf=def"], "n": 1}',
+            f'{{"Set-Cookie": [{REDACTED}], "n": 1}}',
+        ),
+        ('{"cookie": ["sid=abc"]}', f'{{"cookie": [{REDACTED}]}}'),
+        ('{"cookies": ["sid=abc", "x=y"]}', f'{{"cookies": [{REDACTED}]}}'),
+        ('{"cookies": "sid=abc"}', f'{{"cookies": "{REDACTED}"}}'),
+        ('"set-cookie": ["sid=cut', f'"set-cookie": [{REDACTED}'),
+    ],
+)
+def test_cookie_lists(text: str, expected: str) -> None:
+    assert redact(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('{\\"Cookie\\":\\"sid=abc\\"}', f'{{\\"Cookie\\":\\"{REDACTED}\\"}}'),
+        (
+            '"{\\"password\\": \\"hunter two\\", \\"user\\": \\"a\\"}"',
+            f'"{{\\"password\\": \\"{REDACTED}\\", \\"user\\": \\"a\\"}}"',
+        ),
+        ('{\\"api_key\\":\\"k-1\\"}', f'{{\\"api_key\\":\\"{REDACTED}\\"}}'),
+    ],
+)
+def test_escaped_json_values(text: str, expected: str) -> None:
     assert redact(text) == expected
 
 

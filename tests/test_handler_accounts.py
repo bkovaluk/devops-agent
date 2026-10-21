@@ -190,6 +190,16 @@ def test_member_job_stores_and_notifies_on_the_agents_clients(run: Run) -> None:
     assert [operation for operation, _ in run.clients.sns.calls] == ["publish"]
 
 
+@pytest.mark.parametrize("code", ["Throttling", "503"])
+def test_transient_assume_role_failure_is_retried_without_a_finding(run: Run, code: str) -> None:
+    run.stubber.add_client_error("assume_role", code, "slow down")
+    result = handler(_event(member_job(finding_id="f-1")), lambda_context())
+    assert result == {"batchItemFailures": [{"itemIdentifier": "msg-1"}]}
+    assert "finding#f-1" not in run.table.items
+    assert run.contexts == []
+    assert run.bedrock.calls == []
+
+
 def test_failed_assume_role_is_an_incomplete_finding_naming_it(run: Run) -> None:
     run.stubber.add_client_error("assume_role", "AccessDenied", "not authorized")
     result = handler(_event(member_job(finding_id="f-1")), lambda_context())

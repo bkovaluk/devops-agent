@@ -427,6 +427,31 @@ def test_transient_assume_role_failure_fails_the_record_for_retry(
     assert work.account_id == OWN_ACCOUNT
 
 
+def test_a_refused_member_role_is_assumed_once_per_invocation(
+    clients: TriageClients, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _set(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read")
+    clients.sts.responses["assume_role"] = client_error("AccessDenied")
+    names = ("a-errors", "b-errors", "c-errors")
+    result = _triage(*(member_alarm_event(name=name) for name in names))
+    assert result == {"batchItemFailures": []}
+    assert clients.sts.operations().count("assume_role") == 1
+    decisions = _refused(clients, capsys)
+    assert [item["decision"] for item in decisions] == ["skipped_account"] * 3
+
+
+def test_a_transient_assume_role_failure_is_tried_again_for_the_next_alarm(
+    clients: TriageClients, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read")
+    clients.sts.responses["assume_role"] = client_error("Throttling")
+    result = _triage(member_alarm_event(name="a-errors"), member_alarm_event(name="b-errors"))
+    assert result == {
+        "batchItemFailures": [{"itemIdentifier": "msg-1"}, {"itemIdentifier": "msg-2"}]
+    }
+    assert clients.sts.operations().count("assume_role") == 2
+
+
 @pytest.mark.usefixtures("members")
 @pytest.mark.parametrize("code", ["AccessDenied", "RegionDisabledException", "MalformedPolicy"])
 def test_member_role_that_refuses_to_be_assumed_is_a_skipped_account(

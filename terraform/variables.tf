@@ -198,6 +198,12 @@ variable "account_daily_budget" {
   default     = null
 }
 
+variable "account_p1_daily_overflow" {
+  description = "With member_role_name set, priority 1 jobs one account may run past the hourly budget per UTC day, within the global overflow (ACCOUNT_P1_DAILY_OVERFLOW). Null keeps the code default of 5."
+  type        = number
+  default     = null
+}
+
 variable "member_role_name" {
   description = "Name of the read-only role terraform/member creates in every member account (MEMBER_ROLE_NAME). The agent assumes it to read a member account's alarm. Null reads only this account."
   type        = string

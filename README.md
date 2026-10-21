@@ -435,7 +435,9 @@ How the agent then works across accounts:
   `devops-agent-<finding id>`, as long as the invocation can still run) and builds
   every client its tools and context bundle use from that session. Bedrock, the
   queues, the findings table and the topic stay on the agent's own role. An
-  AssumeRole that fails ends the job as an incomplete finding naming it. In triage, a
+  AssumeRole that is throttled or cannot reach STS fails the job's record, so SQS
+  retries it; any other AssumeRole failure ends the job as an incomplete finding
+  naming it. In triage, a
   member role that refuses to be assumed (access denied, a missing role, a disabled
   region) drops the signal as a `skipped_account` decision naming the AWS error code;
   only a throttled or unreachable STS call is retried.

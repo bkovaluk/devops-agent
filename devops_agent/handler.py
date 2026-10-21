@@ -174,7 +174,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 def _handle_record(
     aws: AgentClients, settings: Settings, record: dict[str, Any], context: Any
 ) -> bool:
-    """False when the record must be retried: its finding could not be stored."""
+    """False when the record must be retried: its account could not be reached for a
+    reason that may clear (a throttled or unreachable STS), or its finding could not be
+    stored."""
     job = parse_job(record)
     if job is None:
         return True
@@ -184,6 +186,18 @@ def _handle_record(
     now = datetime.now(UTC)
     try:
         _investigate_and_record(aws, settings, job, now, context)
+    except AccountAccessError as exc:
+        if exc.transient:
+            logger.warning(
+                "account not reachable, job will be retried",
+                extra={
+                    "finding_id": job.finding_id,
+                    "account_id": job.account_id,
+                    "error": str(exc),
+                },
+            )
+            return False
+        return _record_failure(aws, settings, job, now, exc)
     except Exception as exc:
         return _record_failure(aws, settings, job, now, exc)
     return True

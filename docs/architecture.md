@@ -536,7 +536,9 @@ The finding is stored with a conditional put under the pre-allocated id, so a
 redelivered job whose finding exists does nothing. A failure during the
 investigation stores an incomplete finding naming the exception class (and, for an
 `AccountAccessError`, the account, role and AWS error code it names) under the same
-id. If that store fails too, the record is reported in `batchItemFailures`
+id, except a transient `AccountAccessError` (STS throttled, unavailable, a 5xx or a
+connection error), which stores nothing and reports the record in `batchItemFailures`
+so SQS redelivers it. If that store fails too, the record is reported in `batchItemFailures`
 and SQS redelivers it; after 2 receives it goes to the DLQ. An incident is published
 once, headlined "Storm: N alarms in 60 s".
 
@@ -783,7 +785,9 @@ behaves as described everywhere else in this document. `accounts.py` implements 
   member job whose role cannot be assumed, or that names a member account while
   `MEMBER_ROLE_NAME` is unset, stores an incomplete finding whose summary names the
   failure (`AccountAccessError: AssumeRole of <role ARN> failed (<code>)`); it never
-  runs on other credentials. In triage, a refusal that stands (`AccessDenied`, which
+  runs on other credentials. A transient AssumeRole failure (throttling, STS
+  unavailable or timing out, a 5xx, a connection error) stores nothing: the record
+  fails, so SQS redelivers the job, and after 2 receives it goes to the DLQ. In triage, a refusal that stands (`AccessDenied`, which
   STS also returns for a role that does not exist, a malformed or oversized policy, a
   region disabled for STS, any code but a transient one) drops the signal as a
   `skipped_account` decision whose reason names the role and the code, with no finding

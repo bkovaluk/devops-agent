@@ -193,8 +193,9 @@ def triage_clients(region: str, table_name: str) -> TriageClients:
 @dataclass
 class _Accounts:
     """The accounts of one invocation: the agent's own (empty when STS could not tell
-    it outside Lambda), and the alarm readers of each member account, opened on first use and kept
-    for this invocation only."""
+    it outside Lambda), and the alarm readers of each member account, opened on first
+    use and kept for this invocation only. A member role that refused to be assumed is
+    refused again for the rest of the invocation without another AssumeRole."""
 
     clients: TriageClients
     settings: TriageSettings
@@ -203,6 +204,7 @@ class _Accounts:
     name: str
     seconds_left: Callable[[], float]
     opened: dict[str, AlarmReaders] = field(default_factory=dict)
+    refused: dict[str, AccountAccessError] = field(default_factory=dict)
 
     def scope(self, account_id: str) -> str:
         """The account a signal's keys are scoped by: a member account, else none."""
@@ -211,16 +213,23 @@ class _Accounts:
     def readers(self, account_id: str) -> AlarmReaders:
         if not is_member(account_id, self.own):
             return self.clients.readers
+        if account_id in self.refused:
+            raise self.refused[account_id]
         if account_id not in self.opened:
-            session = open_session(
-                account_id,
-                own=self.own,
-                settings=self.settings,
-                sts=self.clients.sts,
-                partition=self.partition,
-                name=self.name,
-                seconds_left=self.seconds_left(),
-            )
+            try:
+                session = open_session(
+                    account_id,
+                    own=self.own,
+                    settings=self.settings,
+                    sts=self.clients.sts,
+                    partition=self.partition,
+                    name=self.name,
+                    seconds_left=self.seconds_left(),
+                )
+            except AccountAccessError as exc:
+                if not exc.transient:
+                    self.refused[account_id] = exc
+                raise
             self.opened[account_id] = AlarmReaders.of(session)
         return self.opened[account_id]
 

@@ -25,11 +25,12 @@ locals {
   )
 
   triage_optional = {
-    HOURLY_BUDGET         = var.hourly_budget
-    DAILY_BUDGET          = var.daily_budget
-    DAILY_TOKEN_BUDGET    = var.daily_token_budget
-    ACCOUNT_HOURLY_BUDGET = var.account_hourly_budget
-    ACCOUNT_DAILY_BUDGET  = var.account_daily_budget
+    HOURLY_BUDGET             = var.hourly_budget
+    DAILY_BUDGET              = var.daily_budget
+    DAILY_TOKEN_BUDGET        = var.daily_token_budget
+    ACCOUNT_HOURLY_BUDGET     = var.account_hourly_budget
+    ACCOUNT_DAILY_BUDGET      = var.account_daily_budget
+    ACCOUNT_P1_DAILY_OVERFLOW = var.account_p1_daily_overflow
   }
 
   triage_environment = merge(
