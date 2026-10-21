@@ -1,9 +1,11 @@
 # Terraform contract
 
 What a deployment of devops-agent needs, for the Terraform module in `terraform/`. One
-deployment serves one AWS account and region. Names below use a `name_prefix` variable
-(default `devops-agent`) and an `environment` variable (`dev`, `qa`, `staging` or
-`prod`); `<prefix>` is `${name_prefix}` and `<env>` is `${environment}`.
+deployment serves one region: its own AWS account, and optionally the member accounts
+of an AWS Organization, each of which deploys `terraform/member` (see Member accounts).
+Names below use a `name_prefix` variable (default `devops-agent`) and an `environment`
+variable (`dev`, `qa`, `staging` or `prod`); `<prefix>` is `${name_prefix}` and `<env>`
+is `${environment}`.
 
 ## Inputs the module should take
 
@@ -25,6 +27,11 @@ deployment serves one AWS account and region. Names below use a `name_prefix` va
 | `datadog_site` | `datadoghq.com` | `DATADOG_SITE` |
 | `github_app_id`, `github_app_installation_id`, `github_app_private_key` | `null` (private key sensitive) | `GH_APP_ID`, `GH_APP_INSTALLATION_ID`, `GH_APP_PRIVATE_KEY` |
 | `github_org` | `null` | `GH_ORG` |
+| `member_role_name` | `null` | `MEMBER_ROLE_NAME` on both functions and the `sts:AssumeRole` grant |
+| `member_external_id` | `null` | `MEMBER_EXTERNAL_ID` on both functions |
+| `allowed_account_ids` | `[]` | `ALLOWED_ACCOUNT_IDS` on both functions, and the accounts the `sts:AssumeRole` grant names (every account when empty) |
+| `organization_id` | `null` | the central event bus, its organization-only policy and its rule |
+| `account_hourly_budget`, `account_daily_budget` | `null` | `ACCOUNT_HOURLY_BUDGET`, `ACCOUNT_DAILY_BUDGET` on triage |
 | `extra_environment` | `{}` | any other variable in the tables below (budgets, throttles, steps, log level) |
 | `alarm_actions` | `[]` | the queue and token alarms, and the budget's notifications (its SNS topics) |
 | `tags` | `{}` | all resources |
@@ -58,6 +65,7 @@ Terraform with a retention period.
 | `SLACK_CHANNEL` | `notifications_channel`, when set |
 | `CATALOG_PARAMETER` | the catalog parameter's name, when `catalog_json` is set |
 | `DD_API_KEY`, `DATADOG_APP_KEY`, `DATADOG_SITE` | the Datadog settings, when set: the investigator's Datadog tools and triage's monitor verification use them |
+| `MEMBER_ROLE_NAME`, `MEMBER_EXTERNAL_ID`, `ALLOWED_ACCOUNT_IDS` | the member account settings, when set (`ALLOWED_ACCOUNT_IDS` comma-separated): triage reads a member's alarm and the investigator a member's account through the role |
 | `LOG_LEVEL` | `INFO` unless overridden |
 | `POWERTOOLS_SERVICE_NAME` | `devops-agent` (optional, a log field only) |
 
@@ -74,8 +82,8 @@ notification settings too: set the shared variables on both functions.
 | `GH_APP_ID`, `GH_APP_INSTALLATION_ID`, `GH_APP_PRIVATE_KEY`, `GH_ORG` | the GitHub settings, when set |
 
 Optional with code defaults (see the README's Configuration table): `MAX_STEPS`,
-`MAX_TOKENS`, `PROMPT_CACHING`, `CAPTURE_SNAPSHOTS`, `SERVICE_NOTES_FILE`. `AWS_REGION`
-is set by Lambda.
+`MAX_TOKENS`, `PROMPT_CACHING`, `CAPTURE_SNAPSHOTS`, `SERVICE_NOTES_FILE`, and on both
+functions `DATADOG_ACCOUNT_TAG`. `AWS_REGION` is set by Lambda.
 
 ### Environment, triage only
 
@@ -94,6 +102,8 @@ is set by Lambda.
 | `ALARM_COOLDOWN_MINUTES` | optional, default 120 |
 | `RESOURCE_COOLDOWN_MINUTES` | optional, default 60 |
 | `MAX_DEFERRED_RETRIES` | optional, default 8 |
+| `ACCOUNT_HOURLY_BUDGET` | optional, default 5; applies with `MEMBER_ROLE_NAME` set |
+| `ACCOUNT_DAILY_BUDGET` | optional, default 25; applies with `MEMBER_ROLE_NAME` set |
 
 ## SQS queues
 
@@ -112,7 +122,8 @@ to the alarms queue with `DelaySeconds` 900, so leave the alarms queue's delay s
 at their defaults.
 
 The alarms queue policy allows `sqs:SendMessage` from `events.amazonaws.com` with
-`aws:SourceArn` equal to the CloudWatch alarm rule's ARN or the Datadog rule's.
+`aws:SourceArn` equal to the CloudWatch alarm rule's ARN, the central bus rule's or the
+Datadog rule's.
 
 ### Queue alarms
 
@@ -144,11 +155,15 @@ Global secondary indexes, both with projection `ALL`:
 Declare `pk`, `resource_key`, `status` and `created_at` as attributes. Items share the
 table by `pk` prefix: `finding#<id>` (findings), `snap#<id>` (eval snapshots),
 `active#<resource_key>` (running-job claims, `active.py`), `budget#<YYYY-MM-DDTHH>`,
-`budget#<YYYY-MM-DD>`, `budget#tokens#day#<YYYY-MM-DD>`, `budget#datadog#<YYYY-MM-DDTHH>`
-and `budget#p1#day#<YYYY-MM-DD>` (budget counters, `gate.py`), `rate#<YYYY-MM-DDTHH:MM>`
-(the signal rate), `storm#active` (the open storm) and `obs#<resource_key>` (sources
-that returned data). Only `finding#` items carry `resource_key` and `status`, so only
-findings appear in the indexes.
+`budget#<YYYY-MM-DD>`, `budget#tokens#day#<YYYY-MM-DD>`, `budget#datadog#<YYYY-MM-DDTHH>`,
+`budget#p1#day#<YYYY-MM-DD>` and, with member accounts,
+`budget#account#<account>#<YYYY-MM-DDTHH>` and `budget#account#<account>#<YYYY-MM-DD>`
+(budget counters, `gate.py`), `rate#<YYYY-MM-DDTHH:MM>` and
+`rate#<account>#<YYYY-MM-DDTHH:MM>` (the signal rate), `storm#active` and
+`storm#active#<account>` (the open storm) and `obs#<resource_key>` (sources that
+returned data). A member account's `resource_key` is `<account id>/<key>`; the agent's
+own account's keys carry no account. Only `finding#` items carry `resource_key` and
+`status`, so only findings appear in the indexes.
 
 ## EventBridge rules
 
@@ -187,6 +202,12 @@ queue:
 The tags are the catalog's `agent.datadog_monitor_tags`. Triage reads each monitor back
 and keeps only alerting groups of monitors that carry them.
 
+With `organization_id` set, the module also creates the central event bus
+`<prefix>-alarms-<env>`, with a resource policy that allows `events:PutEvents` to any
+principal whose `aws:PrincipalOrgID` is `organization_id`, and the rule
+`<prefix>-member-alarms-<env>` on it, with the same pattern as `<prefix>-alarms-<env>`,
+targeting the alarms queue. The member accounts' rules put their alarm events there.
+
 ## Catalog parameter
 
 With `catalog_json` set, an SSM String parameter `/<prefix>/<env>/catalog` holds it
@@ -220,6 +241,10 @@ forecasted spend.
 `arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy`: Describe, List and Get across most
 services, kept current by AWS, for the generic `aws_call` tool. The explicit deny below
 still wins over it.
+
+The managed policy, the Read statements and the Explicit deny below are defined once,
+in `terraform/modules/shared`, which both this role and every member account's
+read-only role use.
 
 ### Logs
 
@@ -278,6 +303,14 @@ These cover every boto3 operation in `READ_ONLY_OPERATIONS` in
   delayed retries)
 - `sns:Publish` on `notifications_topic_arn`, only when it is set
 
+### Member roles
+
+Only with `member_role_name` set, in its own policy `member-roles`: `sts:AssumeRole` on
+`arn:aws:iam::<account>:role/<member_role_name>` for each of `allowed_account_ids`, or
+`arn:aws:iam::*:role/<member_role_name>` when that list is empty. No `sts:ExternalId`
+condition: a caller's own policy cannot require it, so each member role's trust policy
+does.
+
 ### Explicit deny
 
 A backstop; nothing above grants these, and `devops_agent/aws_guard.py` refuses the
@@ -298,14 +331,16 @@ states:GetExecutionHistory
 kinesis:GetRecords
 kinesis:GetShardIterator
 iam:*
-sts:AssumeRole
 sts:GetFederationToken
 sts:GetSessionToken
 ```
 
+`sts:AssumeRole` with `NotResource` set to the member role ARNs above, or on `*` when
+there are none: the only roles the role may assume are the member roles.
+
 `ssm:GetParameter`, `ssm:GetParameters`, `ssm:GetParametersByPath` and
-`ssm:GetParameterHistory` with `NotResource` set to the catalog parameter's ARN:
-parameters can hold credentials.
+`ssm:GetParameterHistory` with `NotResource` set to the catalog parameter's ARN (on `*`
+without one): parameters can hold credentials.
 
 The reads `AIDevOpsAgentAccessPolicy` grants that return user data, code, command
 output, configuration contents, environment variables, arguments or credentials, and
@@ -357,10 +392,43 @@ And `sqs:ReceiveMessage` with `NotResource` set to the alarms and work queue ARN
 Do not deny `kms:Decrypt`: Lambda decrypts the function's own environment variables as
 this role. The role grants no `kms:Decrypt` of its own.
 
+## Member accounts
+
+`terraform/member`, deployed once in every member account, in the agent's region, with
+the agent module's `role_arn` as `investigator_role_arn` and its
+`central_event_bus_arn`.
+
+| Input | Default | Used for |
+|-------|---------|----------|
+| `investigator_role_arn` | required | the only principal the read-only role trusts |
+| `central_event_bus_arn` | required | the forwarding rule's target and its role's grant |
+| `role_name` | `devops-agent-read` | the read-only role; the agent's `member_role_name` |
+| `external_id` | `null` | the `sts:ExternalId` the trust policy requires; the agent's `member_external_id` |
+| `name_prefix` | `devops-agent` | the rule and its role, and an excluded alarm name prefix; the agent's `name_prefix` |
+| `catalog_json` | `null` | the excluded alarm name prefixes, when the agent's catalog sets its own |
+| `tags` | `{}` | all resources |
+
+It creates:
+
+- The read-only role `<role_name>`, maximum session 1 hour, trusting only
+  `investigator_role_arn` for `sts:AssumeRole`, with `StringEquals` on `sts:ExternalId`
+  when `external_id` is set. It has the managed policy, the Read statements and the
+  Explicit deny of the agent's own role (from `terraform/modules/shared`), with no
+  catalog parameter (every SSM parameter read denied), no queue
+  (`sqs:ReceiveMessage` denied everywhere) and `sts:AssumeRole` denied everywhere.
+- The rule `<prefix>-forward-alarms` on the default bus, with the pattern of
+  `<prefix>-alarms-<env>` (state ALARM, the same excluded prefixes), targeting
+  `central_event_bus_arn` as the role `<prefix>-forward-alarms`, which
+  `events.amazonaws.com` assumes and which may `events:PutEvents` on that bus only.
+
+Outputs: `role_arn`, `role_name`, `forward_rule_arn`.
+
 ## Not in the module
 
 - The SNS topic and whatever posts its messages to Slack: the module takes an existing
   topic ARN.
+- The AWS Organization and the roles that deploy `terraform/member` into each member
+  account.
 - The Datadog service account, the Datadog EventBridge integration that creates the
   partner event source, and the GitHub App: the module takes their credentials and the
   event source name.

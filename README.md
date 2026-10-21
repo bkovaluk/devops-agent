@@ -7,7 +7,8 @@ structured finding: what is happening, the likely cause, what it checked, what a
 needs to do, a severity and an effort to fix. It never changes anything.
 
 Fork it, deploy the Terraform module, and every alarm in the account gets a first
-investigation within minutes.
+investigation within minutes. Add the member module to the other accounts of an AWS
+Organization and one agent investigates them all (see [Many accounts](#many-accounts)).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
@@ -24,25 +25,33 @@ CloudWatch alarm enters ALARM            Datadog monitor group enters Alert or W
     SQS alarms queue
       Lambda triage  (batches of up to 25 within 60 s, no model)
         parse     signals by detail-type; drop non-ALARM events, excluded alarm names
-                  and monitor recoveries; dedupe by alarm name or monitor id and group
-        settle    CloudWatch: resource keys from the alarm's metric (metric math: its
-                  first metric with dimensions), consumer Lambdas of a queue or stream,
-                  Severity tag. Datadog: read the monitor back and verify it
+                  and monitor recoveries; dedupe by account and alarm name, or by
+                  monitor id and group
+        settle    CloudWatch, read in the alarm's account: resource keys from the
+                  alarm's metric (metric math: its first metric with dimensions),
+                  consumer Lambdas of a queue or stream, Severity tag. Datadog: read
+                  the monitor back and verify it. A signal from an account or region
+                  the agent may not read is dropped; a member account's keys are
+                  scoped by its account id
         opt-out   signals tagged DevOpsAgent=off get a skipped finding
         repeat    an open investigation of the signal at the same floor counts one more
                   firing; so does one closed within the cooldown
         link      a running job, or an earlier signal in the batch, on any of its keys
                   takes it as a linked finding
-        storm     the signal rate above STORM_RATE for two 5-minute buckets: one storm
-                  finding, its head and every P1/P2 signal still go through the
-                  budgets, P3/P4 signals are grouped onto it; else 5 or more jobs left
-                  in one batch: one incident job, the others grouped findings
-        budget    by priority; P1 and P2 defer and go back to the alarms queue, delayed
-                  15 minutes, while they stay in ALARM; P3 and P4 are skipped
+        storm     an account's signal rate above STORM_RATE for two 5-minute buckets:
+                  one storm finding, its head and every P1/P2 signal still go through
+                  the budgets, P3/P4 signals are grouped onto it; else 5 or more jobs
+                  of one account left in one batch: one incident job, the others
+                  grouped findings
+        budget    by priority, and with member accounts each account's share too; P1
+                  and P2 defer and go back to the alarms queue, delayed 15 minutes,
+                  while they stay in ALARM; P3 and P4 are skipped
         emit      claim the resource keys, count the budgets, send the job
         every decision: one CloudWatch metric and one log line
     SQS work queue
       Lambda investigator  (one job at a time, at most 2 at once)
+        session      the job's account: the agent's own credentials, or a member
+                     account's read-only role assumed for this job alone
         recall       up to 3 findings on the same resource that a person reviewed
         precheck     code (no model) gathers a context bundle
         investigate  Bedrock Converse loop: hypotheses first, then read-only tools,
@@ -89,13 +98,19 @@ The full design is in [docs/architecture.md](docs/architecture.md).
 - **Untrusted signals are verified.** A Datadog notification is read back from the
   Datadog API before triage acts on it: the monitor must exist, carry the opt-in tag
   and this env's `env` tag, and still be alerting.
+- **One account per job.** With member accounts, a job reads its account only through
+  that account's read-only role, assumed for that job alone with credentials no other
+  job or account ever sees; a failed AssumeRole ends the job as an incomplete finding,
+  never as a run on other credentials. Bedrock, the queues, the findings table and the
+  topic stay on the agent's own role.
 - **Redaction.** Results are projected to small JSON, capped, and redacted for
   credential shapes before the model sees them, and every string field of a finding is
   redacted again before it is stored or published.
 - **Severity floor.** The floor comes from the alarm's `Severity` tag or the
   environment's default in the catalog. The model can raise severity, never lower it.
-- **Budgets.** Hourly and daily investigation budgets, a per-run token budget and a
-  daily token budget cap the Bedrock spend; token alarms and a cost budget watch it.
+- **Budgets.** Hourly and daily investigation budgets (and, with member accounts, each
+  account's share of them), a per-run token budget and a daily token budget cap the
+  Bedrock spend; token alarms and a cost budget watch it.
 
 ## Context bundle
 
@@ -161,7 +176,8 @@ never returns the values its key stripping and blocked operations withhold. To c
 another service, add its botocore name to `ALLOWED_SERVICES` in `aws_guard.py` only
 after reading its Describe, List and Get operations: block in `BLOCKED_OPERATIONS`
 every one that returns contents, secrets, credentials, environment variables or
-payloads, mirror those in the IAM deny in `terraform/iam.tf`, then extend the tests.
+payloads, mirror those in the IAM deny in `terraform/modules/shared/main.tf`, then
+extend the tests.
 
 ## Findings
 
@@ -261,6 +277,10 @@ Both Lambdas read the shared settings; the triage Lambda also reads the triage s
 | `GH_APP_INSTALLATION_ID` | unset | the App's installation id on `GH_ORG` |
 | `GH_APP_PRIVATE_KEY` | unset | the App's PEM private key |
 | `GH_ORG` | unset | the only GitHub org the tools read; the GitHub tools are offered only when this and the three App settings are set |
+| `MEMBER_ROLE_NAME` | unset | name of the read-only role in every member account; unset, the agent reads only its own account and refuses signals from others (see [Many accounts](#many-accounts)) |
+| `MEMBER_EXTERNAL_ID` | unset | external id sent when assuming a member role; the member roles' trust policies require it |
+| `ALLOWED_ACCOUNT_IDS` | unset | comma-separated account ids; when set, signals from any other account are refused (list the agent's own account to investigate it) |
+| `DATADOG_ACCOUNT_TAG` | `aws_account` | the Datadog monitor tag whose value names the AWS account the monitor watches; a monitor without it is the agent's own account |
 
 Triage only:
 
@@ -279,6 +299,8 @@ Triage only:
 | `ALARM_COOLDOWN_MINUTES` | `120` | a firing of the same alarm within this many minutes of a closed finding on its resource counts on that finding instead of starting an investigation |
 | `RESOURCE_COOLDOWN_MINUTES` | `60` | the same, for any alarm on the resource |
 | `MAX_DEFERRED_RETRIES` | `8` | times one deferred alarm is retried (15 minutes apart) |
+| `ACCOUNT_HOURLY_BUDGET` | `5` | with `MEMBER_ROLE_NAME` set, investigations one account may use per UTC hour, within `HOURLY_BUDGET` |
+| `ACCOUNT_DAILY_BUDGET` | `25` | with `MEMBER_ROLE_NAME` set, investigations one account may use per UTC day, within `DAILY_BUDGET` |
 
 Signal priority is 1 for critical down to 4 for low (a CloudWatch alarm's from its
 severity floor, a Datadog signal's from its monitor). When the budgets refuse, a
@@ -288,7 +310,8 @@ resource key an hour as a skipped "over budget" finding and never requeued.
 Triage emits `Decision` (Count) in the CloudWatch namespace `DevOpsAgent`, with the
 dimensions `env`, `source` (`cloudwatch` or `datadog`) and `decision` (`investigated`,
 `linked`, `cooldown`, `deferred`, `skipped_budget`, `skipped_unverified`,
-`storm_grouped` or `opted_out`), once per signal.
+`storm_grouped`, `opted_out` or `skipped_account`), plus `account` when
+`MEMBER_ROLE_NAME` is set, once per signal. Its log line names the signal's account.
 
 Secrets (`DD_API_KEY`, `DATADOG_APP_KEY`, `GH_APP_PRIVATE_KEY`) are read from the
 environment, so the role needs no secret reads. Inject them at deploy time from your
@@ -319,12 +342,20 @@ In short:
 - `bedrock:InvokeModel` on the configured models and the module's inference profiles;
 - writes only on the agent's own resources: the findings table, the two queues, the
   log groups and, when notifications are on, `sns:Publish` on the topic;
+- with `member_role_name` set, `sts:AssumeRole` on that role in every account of the
+  organization, or in `allowed_account_ids` only;
 - an explicit deny that wins over all of the above: secret and parameter values, S3
   object bodies, Lambda configuration (it returns the Datadog and GitHub keys in
   plaintext), task definitions, Step Functions inputs and history, stream records,
-  `iam:*`, STS, every read in the managed policy that returns user data, code, command
-  output, configuration contents or credentials, API key values, and every queue but
-  the agent's own. `aws_guard.py` refuses the same operations before they reach AWS.
+  `iam:*`, STS (AssumeRole of any role but the member roles), every read in the managed
+  policy that returns user data, code, command output, configuration contents or
+  credentials, API key values, and every queue but the agent's own. `aws_guard.py`
+  refuses the same operations before they reach AWS.
+
+Each member account's read-only role, created by `terraform/member`, carries the same
+managed policy, read grants and deny list (one shared definition in
+`terraform/modules/shared`), with no queue and no parameter readable, and trusts only
+the agent's role, with the external id.
 
 The Lambdas need no VPC: every call is a public AWS, Datadog or GitHub API.
 
@@ -339,7 +370,8 @@ The Terraform module lives in [`terraform/`](terraform/). It creates both Lambda
 alarms and work queues with their dead-letter queues and their DLQ and backlog alarms,
 the findings table, the EventBridge rule, the execution role and its policies, the
 Bedrock application inference profiles with their token alarms and a cost budget, and,
-when you ask for them, the catalog parameter and the Datadog partner event bus rule. It
+when you ask for them, the catalog parameter, the Datadog partner event bus rule and
+the central event bus member accounts forward their alarms to. It
 sets the environment variables listed under [Configuration](#configuration). The exact
 resource list it implements is in [docs/terraform-contract.md](docs/terraform-contract.md).
 
@@ -348,37 +380,62 @@ The module's inputs, outputs and secret handling are in
 
 ### Many accounts
 
-The module deploys the agent into one account and investigates that account. For an AWS
-Organization with several workload accounts, the pattern below runs one agent from a
-central tooling account instead. It is a reference design: the module and the agent do
-not implement it yet.
+One agent can serve every account of an AWS Organization from a central tooling
+account. The tooling account runs the agent module; every member account runs
+[`terraform/member`](terraform/member) once. Nothing changes for a deployment that
+leaves the settings below unset: it reads its own account only.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/multi-account-dark.svg">
-  <img alt="Multi-account layout: in each member account, CloudWatch alarms go to the default event bus, where a rule forwards ALARM state changes to a central event bus in the tooling account. The tooling account runs the alarms queue, triage, work queue and investigator. For each job the investigator calls STS to assume a read-only role in the member account the alarm came from; it also calls Amazon Bedrock and optionally Datadog and GitHub, and writes findings, keyed by account, to its own table." src="docs/multi-account-light.svg">
+  <img alt="Multi-account layout: in each member account, CloudWatch alarms go to the default event bus, where a rule forwards ALARM state changes to a central event bus in the tooling account. The tooling account runs the alarms queue, triage, work queue and investigator. Triage and each investigation call STS to assume a read-only role in the member account the alarm came from; the investigator also calls Amazon Bedrock and optionally Datadog and GitHub, and writes findings, keyed by account, to its own table." src="docs/multi-account-light.svg">
 </picture>
 
-What it takes:
+To enable it:
 
-- **Central event bus** in the tooling account, with a resource policy that accepts
-  events only from your organization (`aws:PrincipalOrgID`).
-- **A rule in every member account** on the default bus, matching
-  `CloudWatch Alarm State Change` with state `ALARM` and the same name exclusions the
-  module's own rule applies, targeting the central bus. A rule that targets a bus in
-  another account needs a role it assumes to put events there.
-- **A rule on the central bus** that sends those events to the alarms queue.
-- **A read-only role in every member account** with the same policy and deny list as
-  the single-account execution role, trusting only the investigator's role (plus an
-  external ID).
-- **The investigator assumes that role per job**, chosen by the account id in the alarm
-  event, for the length of one job, and builds its AWS clients from those credentials.
-  Bedrock, the queues and the findings table stay in the tooling account.
-- **One region.** Cross-account rules and the investigator's clients work within one
-  region; resources in other regions are not read.
-- **Datadog signals carry no account id.** Route them with a monitor tag that names the
-  account, or let them read only the tooling account.
-- **Findings record the account** they read, and budgets and cooldowns are kept per
-  account so one noisy account cannot spend the others' budget.
+1. **In the tooling account**, set the agent module's `organization_id` (it creates a
+   central event bus that accepts `events:PutEvents` only from your organization, with
+   a rule that sends the same alarm events to the alarms queue), `member_role_name`
+   (for example `devops-agent-read`), `member_external_id`, and optionally
+   `allowed_account_ids` (the accounts it may investigate, the tooling account among
+   them when its own alarms count; empty means every account of the organization).
+2. **In every member account**, deploy `terraform/member` with `investigator_role_arn`
+   and `central_event_bus_arn` from the agent module's `role_arn` and
+   `central_event_bus_arn` outputs, `role_name` equal to `member_role_name`, and the
+   same `external_id`. It creates the read-only role, with the same managed policy,
+   read grants and deny list as the agent's own role and trusting only the agent's
+   role with that external id, and a default-bus rule that forwards alarms entering
+   ALARM (with the same name exclusions) to the central bus as a role of its own.
+
+[`terraform/examples/multi-account`](terraform/examples/multi-account) deploys the
+tooling account and two members from one configuration, with a provider alias per
+account.
+
+How the agent then works across accounts:
+
+- **Account of a signal.** A CloudWatch signal's account is its event's `account`,
+  which must match the alarm ARN. A Datadog signal's account is the value of its
+  monitor's `aws_account` tag (`DATADOG_ACCOUNT_TAG`), read from the monitor Datadog
+  returns, never from the payload; a monitor without it is the agent's own account.
+  A signal whose account is missing, not in `ALLOWED_ACCOUNT_IDS`, or another account
+  while `MEMBER_ROLE_NAME` is unset is dropped as a `skipped_account` decision, with
+  no finding.
+- **One region.** The agent reads its own region only; a signal from another region is
+  dropped the same way. Deploy the member module in the agent's region.
+- **Reading a member account.** Triage reads a member alarm's config and tags through
+  the member role, and the investigator assumes the role for each job (session
+  `devops-agent-<finding id>`, as long as the invocation can still run) and builds
+  every client its tools and context bundle use from that session. Bedrock, the
+  queues, the findings table and the topic stay on the agent's own role. An
+  AssumeRole that fails ends the job as an incomplete finding naming it.
+- **Keys by account.** A member account's resource keys are `<account id>/<key>`, so
+  repeats, cooldowns, links, claims, remembered sources and reviewed prior findings
+  never cross accounts; the agent's own account keeps its keys unchanged. Every
+  finding records its `account_id` and `region`.
+- **Budgets per account.** Each account may use `ACCOUNT_HOURLY_BUDGET` (5) of the
+  hourly and `ACCOUNT_DAILY_BUDGET` (25) of the daily investigations, within the
+  global budgets, so one noisy account cannot spend the others'. Each member account
+  has its own signal rate and storm, and an incident never mixes accounts. Decision
+  metrics carry an `account` dimension.
 
 ### Build
 

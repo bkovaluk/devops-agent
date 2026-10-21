@@ -12,6 +12,7 @@ ROW = 190  # the central pipeline
 MEMBER_Y = 610  # tiles inside each member account
 BUS_LANE = 474  # member buses up to the central bus
 ROLE_LANE = 436  # STS down to each member's read-only role
+STS_LANE = 408  # triage across to STS, under the findings table
 MEMBERS = (("dev", 24), ("staging", 484), ("prod", 944))
 
 
@@ -58,10 +59,21 @@ def draw(t: dict[str, str]) -> str:
     p.append(edge([(558, ROW), (652, ROW)], t, "ESM", 605, ROW - 8))
 
     p.append(tile(530, 340, "dynamodb", "database", "Findings table", "keyed by account", t))
-    p.append(edge([(390, ROW + 68), (390, 350), (502, 350)], t, "claims", 398, 300, anchor="start"))
+    p.append(edge([(380, ROW + 68), (380, 350), (502, 350)], t, "claims", 372, 300, anchor="end"))
+    # Triage reads a member alarm's config and tags through the member role too.
+    p.append(
+        edge(
+            [(400, ROW + 68), (400, STS_LANE), (620, STS_LANE), (620, 344), (652, 344)],
+            t,
+            "alarm reads",
+            408,
+            300,
+            anchor="start",
+        )
+    )
     p.append(edge([(652, ROW + 14), (610, ROW + 14), (610, 330), (558, 330)], t))
 
-    p.append(tile(680, 330, "iam", "security", "STS AssumeRole", "short session per job", t))
+    p.append(tile(680, 330, "iam", "security", "STS AssumeRole", "per job · per batch", t))
     p.append(edge([(680, ROW + 68), (680, 302)], t))
 
     p.append(tile(860, 330, "bedrock", "ml", "Amazon Bedrock", "own profiles", t))
@@ -92,8 +104,9 @@ def draw(t: dict[str, str]) -> str:
         text(
             32,
             height - 18,
-            "Each member role trusts only the investigator's role and carries the same deny list. "
-            "Every finding records the account it read. Optional SNS notify stays central.",
+            "Each member role trusts only the agent's role, with the external id, and carries "
+            "the same deny list. Every finding records the account it read. Optional SNS notify "
+            "stays central.",
             t,
             size=11.5,
             fill="dim",

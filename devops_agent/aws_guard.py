@@ -2,11 +2,11 @@
 
 A second layer under IAM: the execution role is the real boundary. ALLOWED_SERVICES is
 the primary control: only the services an investigation of this stack needs are
-covered. Inside them, the blocked tables mirror the role's explicit deny policy
-(terraform/iam.tf), keyed by botocore service name (``stepfunctions`` is IAM
-``states``, ``elbv2`` and ``elb`` are IAM ``elasticloadbalancing``, ``opensearch`` and
-``es`` are IAM ``es``) and PascalCase operation name. A deny wins over the read
-prefixes.
+covered. Inside them, the blocked tables mirror the roles' explicit deny policy
+(terraform/modules/shared/main.tf), keyed by botocore service name (``stepfunctions``
+is IAM ``states``, ``elbv2`` and ``elb`` are IAM ``elasticloadbalancing``,
+``opensearch`` and ``es`` are IAM ``es``) and PascalCase operation name. A deny wins
+over the read prefixes.
 """
 
 from __future__ import annotations

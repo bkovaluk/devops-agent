@@ -32,9 +32,11 @@ the optional Datadog partner event bus rule) is described in
 
 ## Shape
 
-One deployment per environment account (dev, qa, staging, prod).
-Each deployment investigates only its own account, so no cross-account role is
-needed and one env's agent cannot read another's.
+One deployment per environment (dev, qa, staging, prod). By default a deployment
+investigates only the account it runs in, so no cross-account role is needed and one
+env's agent cannot read another's. A deployment can also serve the member accounts of
+an AWS Organization from a central tooling account, reading each through a read-only
+role the member lends it (see Many accounts).
 
 ```
 CloudWatch alarm enters ALARM            Datadog monitor group enters Alert or Warn
@@ -114,15 +116,17 @@ monitor notifications ("Datadog Alert Notification", `source`
 `aws.partner/datadog.com/<generator>-<suffix>`) that Datadog's Amazon EventBridge
 integration puts on a partner event bus whose rule targets the same queue.
 `signals.py` holds the `Signal` model (`source` `cloudwatch` or `datadog`, `name`,
-`env`, `observed_at`, `resource_keys`, `priority` 1 to 4, `subject`, a source-specific
-`ref` and the `raw` event) and a parser registry keyed by `detail-type`;
+`env`, `observed_at`, `resource_keys`, `priority` 1 to 4, `subject`, `account_id`,
+`region`, a source-specific `ref` and the `raw` event) and a parser registry keyed by
+`detail-type`;
 `parse_signal` dispatches to `cloudwatch_alarm` or `datadog_monitor` and returns None
 for anything else. Everything after parsing (opt-out, repeat, cooldown, links, storms,
 budgets, emit) is the same for both sources.
 
 - **CloudWatch.** An alarm entering ALARM, not the agent's own. `name` is the alarm
-  name, `ref` the ARN, account, region and state reason. Its priority comes from its
-  severity floor: critical 1, high 2, medium 3, low 4 (`severity.priority`).
+  name, `ref` the ARN, account, region and state reason; `account_id` and `region` are
+  the event's. Its priority comes from its severity floor: critical 1, high 2, medium
+  3, low 4 (`severity.priority`).
 - **Datadog.** A notification whose `states.dest_state` (else `alert_type`) is Alert
   or Warn; recoveries and No Data are dropped. The payload is read defensively: every
   field is optional, a field of the wrong type reads as empty, unknown fields are
@@ -135,8 +139,9 @@ budgets, emit) is the same for both sources.
   verification.
 
 A work-queue job carries its signals (`signals`, the job's signal first) beside the
-CloudWatch events among them (`alarms`); a job without `signals` takes them from its
-alarms.
+CloudWatch events among them (`alarms`), and the `account_id` and `region` every one of
+them is in; a job without `signals` takes them from its alarms, and one without
+`account_id` takes its first signal's, else its first alarm event's.
 
 ### Datadog verification
 
@@ -188,18 +193,29 @@ and a Datadog monitor on one resource link and cool down together.
   the Datadog service. Any other group keys as `datadog:monitor=<id>/<group>`.
   Kubernetes workload keys (from `kube_deployment`, `kube_namespace` and the cluster)
   are future work; EKS signals use the fallback key until then.
+- **Accounts.** A signal from a member account (any account but the agent's own) has
+  every key scoped by its account id: `<account id>/<key>`, for example
+  `444455556666/AWS/Lambda:FunctionName=x`. The agent's own account keeps its keys as
+  above, so a deployment without member accounts keys exactly as before and its stored
+  findings, `active#`, `obs#` and cooldowns keep working. Every item keyed by a resource
+  (findings on `by_resource`, `active#`, `obs#`, a storm's `resource_counts`) therefore
+  separates accounts, and two accounts with the same resource name never meet. The
+  context bundle and the tools read the key without its scope (`models.local_key`).
 
 ### Triage
 
 Triage runs no model and considers every signal that reaches it; only the
 `DevOpsAgent=off` tag opts one out. Per distinct signal in a batch, in order:
 
-1. **Parse.** See Signals. A signal in the batch twice (same alarm name, or same
-   monitor id and group) is triaged once.
-2. **Settle.** A CloudWatch alarm is read (`DescribeAlarms`) for its resource keys and
+1. **Parse.** See Signals. A signal in the batch twice (same account and alarm name, or
+   same monitor id and group) is triaged once.
+2. **Settle.** The signal's account and region are settled (see Many accounts); a
+   signal the agent may not read is dropped as `skipped_account`, with no finding. A
+   CloudWatch alarm is read in its account (`DescribeAlarms`) for its resource keys and
    its tags (`ListTagsForResource`) for its floor; a retried alarm that has left the
    ALARM episode it was deferred in is dropped (see Deferred retries). A Datadog
-   signal is verified and keyed from its monitor (see Datadog verification).
+   signal is verified and keyed from its monitor (see Datadog verification). A member
+   account's keys are scoped by its account (see Resource keys).
 3. **Opt-out.** A signal tagged `DevOpsAgent=off` (value in any case) gets a
    `skipped` finding ("opted out by tag") and no job (see Opt-out tag).
 4. **Repeat.** When the signal already has an unclosed investigation (status
@@ -219,10 +235,11 @@ Triage runs no model and considers every signal that reaches it; only the
    one sharing any of its keys (consumer chain included) gets a `linked` finding to
    the job's pre-allocated finding id and is appended to its `active#` items'
    `linked_alarms` once the job is sent.
-6. **Storm.** The signals left are added to the signal rate (see Storm mode). While
-   a storm is open they are grouped onto it and only its head is investigated.
-   Otherwise, when `STORM_THRESHOLD` (5) or more distinct jobs remain, they become one
-   `incident` job; the signal with the highest floor leads it, and each of the others
+6. **Storm.** The signals left are added to their account's signal rate (see Storm
+   mode). While a storm is open they are grouped onto it and only its head is
+   investigated. Otherwise, when `STORM_THRESHOLD` (5) or more distinct jobs of one
+   account remain, they become one `incident` job (a job reads one account, so an
+   incident never mixes accounts); the signal with the highest floor leads it, and each of the others
    gets a `grouped` finding with `incident_id` set to the incident's finding id. The
    job lists at most 50 signals and carries the full count.
 7. **Budget.** See Throttles. A refused priority 1 or 2 job gets a `deferred` finding
@@ -265,11 +282,15 @@ Every threshold is a `TriageSettings` field, overridable by its environment vari
 | `ALARM_COOLDOWN_MINUTES` | 120 | see Cost controls |
 | `RESOURCE_COOLDOWN_MINUTES` | 60 | see Cost controls |
 | `MAX_DEFERRED_RETRIES` | 8 | see Deferred retries |
+| `ACCOUNT_HOURLY_BUDGET` | 5 | with `MEMBER_ROLE_NAME` set, jobs one account may use per UTC hour (`budget#account#<account>#<YYYY-MM-DDTHH>`), within the hourly budget |
+| `ACCOUNT_DAILY_BUDGET` | 25 | with `MEMBER_ROLE_NAME` set, jobs one account may use per UTC day (`budget#account#<account>#<YYYY-MM-DD>`), within the daily budget |
 
 Besides these, a low-floor job is refused once the hour's count is half the hourly
 budget. The order is: the low floor rule, the reserve and the token budget (no counter
 moves), then the `active#` claim, then the hourly budget (and the Datadog share for a
-Datadog job; a priority 1 job past either takes the overflow), then the daily budget.
+Datadog job, and with member accounts the job's account's hourly share; a priority 1
+job past any of them takes the overflow), then the daily budget and with member
+accounts the account's daily share. The token budgets stay global.
 
 Drop, don't churn: when the budgets refuse, a priority 1 or 2 job is deferred and sent
 back for retry; a priority 3 or 4 job is recorded as a `skipped` finding ("over
@@ -279,7 +300,10 @@ key and the hour) and is never requeued.
 ### Storm mode
 
 Triage adds the first firings each batch leaves after linking to a 5-minute bucket
-(`rate#<YYYY-MM-DDTHH:MM>`, an atomic `ADD` like the budgets). A deferred signal sent
+(`rate#<YYYY-MM-DDTHH:MM>`, an atomic `ADD` like the budgets). Each member account has
+its own rate and storm (`rate#<account>#<YYYY-MM-DDTHH:MM>` and
+`storm#active#<account>`), so a flood in one account groups only its own signals; the
+agent's own account uses the unscoped items. A deferred signal sent
 back for retry is not counted again; a redelivered SQS record is, and that rare double
 count is accepted because the rate only detects floods. When the previous and the
 current bucket both hold more than `STORM_RATE` (30), triage opens a storm:
@@ -301,8 +325,9 @@ key). The storm ends when a full bucket (the previous one) holds `STORM_RATE` or
 ### Decision metrics
 
 Every triage decision emits one CloudWatch EMF metric through Powertools: `Decision`
-(Count) in namespace `DevOpsAgent`, dimensions `env`, `source` and `decision`,
-and one structured log line with the decision, source, signal name and priority.
+(Count) in namespace `DevOpsAgent`, dimensions `env`, `source` and `decision` (and
+`account` when `MEMBER_ROLE_NAME` is set), and one structured log line with the
+decision, source, signal name, priority and account.
 
 | Decision | When |
 |----------|------|
@@ -314,6 +339,7 @@ and one structured log line with the decision, source, signal name and priority.
 | `skipped_unverified` | a Datadog signal that failed verification, or a retried alarm out of its episode |
 | `storm_grouped` | a member of an in-batch incident, or a priority 3 or 4 signal during an open storm |
 | `opted_out` | a `DevOpsAgent=off` signal |
+| `skipped_account` | a signal whose account is unknown, not allowed or not readable, or from another region |
 
 ### Deferred retries
 
@@ -363,8 +389,10 @@ tool's alarm definitions, never by hand: the next apply removes a hand-added tag
 ### Investigation
 
 The work-queue job carries the finding id, the kind (`alarm` or `incident`), the
-signals, the CloudWatch alarm events among them, the count, the resource keys and
-the floor. An incident's floor is the highest of its signals', and its prompt says
+signals, the CloudWatch alarm events among them, the count, the resource keys, the
+floor, and the account and region. Before anything else the investigator opens the
+job's session (see Many accounts); every read of the account, by the context bundle
+and by the tools, goes through it. An incident's floor is the highest of its signals', and its prompt says
 it is a storm of N alarms, lists them (a Datadog member with its query), and asks for
 their common cause. A Datadog signal's prompt describes the monitor (name, id, type,
 query, group tags, from and to state, priority, evaluation time) instead of an alarm;
@@ -496,8 +524,9 @@ concluded. A failure to write them is logged and does not fail the job.
 
 The finding is stored with a conditional put under the pre-allocated id, so a
 redelivered job whose finding exists does nothing. A failure during the
-investigation stores an incomplete finding naming the exception class under the
-same id. If that store fails too, the record is reported in `batchItemFailures`
+investigation stores an incomplete finding naming the exception class (and, for an
+`AccountAccessError`, the account, role and AWS error code it names) under the same
+id. If that store fails too, the record is reported in `batchItemFailures`
 and SQS redelivers it; after 2 receives it goes to the DLQ. An incident is published
 once, headlined "Storm: N alarms in 60 s".
 
@@ -596,10 +625,13 @@ Every finding records its `source` (`cloudwatch` or `datadog`).
 
 ## IAM
 
-One Lambda execution role is the only role; both functions run as it. Its policy is
-described below and listed exactly in [terraform-contract.md](terraform-contract.md);
-`terraform/iam.tf` implements it. `aws_call` reads through the AWS managed policy
-`AIDevOpsAgentAccessPolicy` attached to the role, under the explicit deny policy.
+One Lambda execution role is the agent's only role; both functions run as it. Its
+policy is described below and listed exactly in
+[terraform-contract.md](terraform-contract.md); `terraform/iam.tf` implements it, with
+the read grants, the managed policy and the deny list defined once in
+`terraform/modules/shared`, which every member account's read-only role uses too.
+`aws_call` reads through the AWS managed policy `AIDevOpsAgentAccessPolicy` attached
+to the role, under the explicit deny policy.
 
 Allowed:
 - CloudWatch: `DescribeAlarms`, `DescribeAlarmHistory`, `GetMetricData`,
@@ -630,6 +662,10 @@ Allowed:
   `SendMessage` on the work queue (jobs) and the alarms queue (triage's delayed
   retries of budget-deferred alarms) only
 - SNS: `Publish` on the `SLACK_TOPIC_ARN` topic only, when notifications are on
+- STS: `AssumeRole` on `arn:<partition>:iam::<account>:role/<MEMBER_ROLE_NAME>` in
+  every account (`*`) or in the allowed accounts only, when member accounts are on.
+  `sts:ExternalId` cannot be required of the caller by its own policy, so each member
+  role's trust policy requires it
 - Standard Lambda logging
 
 Explicit deny (a backstop; nothing above grants them):
@@ -638,7 +674,8 @@ Explicit deny (a backstop; nothing above grants them):
 `lambda:GetFunction`, `lambda:ListFunctions`, `ec2:GetPasswordData`,
 `ecs:DescribeTaskDefinition`, `states:DescribeExecution`,
 `states:GetExecutionHistory`, `kinesis:GetRecords`, `kinesis:GetShardIterator`,
-`iam:*`, `sts:AssumeRole`, `sts:GetFederationToken`, `sts:GetSessionToken`.
+`iam:*`, `sts:GetFederationToken`, `sts:GetSessionToken`, and `sts:AssumeRole` on every
+role but the member roles (all roles when there are none).
 `ssm:GetParameter`, `ssm:GetParameters`, `ssm:GetParametersByPath` and
 `ssm:GetParameterHistory` are denied on every parameter but the catalog's. The reads
 `AIDevOpsAgentAccessPolicy` grants that return user data, code, command output,
@@ -684,6 +721,54 @@ without the GitHub tools. The key signs a short-lived RS256 JWT (iat 60 s back, 
 minutes before it expires. The key, the JWT and the token go only into request
 headers: never into a log line, an error or a tool result.
 
+## Many accounts
+
+Opt-in: with none of the settings below, a deployment reads only its own account and
+behaves as described everywhere else in this document. `accounts.py` implements it.
+
+- **Topology.** A central tooling account runs the agent. With `organization_id` set,
+  the module creates a central event bus whose resource policy allows
+  `events:PutEvents` only to principals of that organization (`aws:PrincipalOrgID`),
+  and a rule on it with the same pattern as the default-bus rule, targeting the alarms
+  queue. Every member account deploys `terraform/member`: a rule on its default bus
+  (state ALARM, the same name exclusions) that puts the events on the central bus
+  through a role of its own, and a read-only role with the same managed policy, read
+  grants and deny list as the agent's role, trusting only the agent's role and
+  requiring the external id. A forwarded event keeps the member's `account`.
+- **Settings.** `MEMBER_ROLE_NAME` (the member role's name; unset, no member account is
+  read), `MEMBER_EXTERNAL_ID`, `ALLOWED_ACCOUNT_IDS` (comma-separated; when set, every
+  other account is refused) and `DATADOG_ACCOUNT_TAG` (default `aws_account`), on both
+  functions. The agent's own account comes from the function ARN in the Lambda
+  context (from `sts:GetCallerIdentity` outside Lambda when member accounts are on).
+- **Account of a signal.** CloudWatch: the event's `account`, which must be an account
+  id and match the alarm ARN's, as its region must. Datadog: the value of the
+  `DATADOG_ACCOUNT_TAG` tag on the monitor Datadog returns (never the payload), else
+  the agent's own account; a tag that is not an account id is refused. Triage drops,
+  as a `skipped_account` decision with no finding, a signal with no trustworthy
+  account, from an account outside `ALLOWED_ACCOUNT_IDS`, from another account while
+  `MEMBER_ROLE_NAME` is unset, or from a region other than the agent's.
+- **Sessions.** Every read of an account goes through an `AccountSession`: its own
+  boto3 session, built for one investigation job (or one triage invocation) and never
+  shared. The agent's own account uses the agent's credentials. A member account's
+  session assumes `arn:<partition>:iam::<account>:role/<MEMBER_ROLE_NAME>` with
+  `MEMBER_EXTERNAL_ID`, the session name `devops-agent-<finding id>` (triage's
+  `devops-agent-triage-<request id>`) and a duration covering the rest of the
+  invocation, 900 to 3600 s. The investigator builds every client of the context
+  bundle and the tools (`aws_call` included) from the job's session; Bedrock, SNS, STS
+  and the findings table are built once per container on the agent's own role. A
+  member job whose role cannot be assumed, or that names a member account while
+  `MEMBER_ROLE_NAME` is unset, stores an incomplete finding whose summary names the
+  failure (`AccountAccessError: AssumeRole of <role ARN> failed (<code>)`); it never
+  runs on other credentials. In triage the failure fails the record, so SQS retries it.
+- **Scope.** Keys are scoped by account (see Resource keys), so repeats, cooldowns,
+  links, claims, recall and remembered sources stay within an account. Each member
+  account has its own signal rate and storm; incidents never mix accounts; with
+  `MEMBER_ROLE_NAME` set, each account has its own share of the hourly and daily
+  budgets beside the global caps (see Throttles), and decision metrics carry the
+  account. Findings record `account_id` and `region`.
+- **One region.** The agent reads its own region; signals from other regions are
+  refused, and the member module is deployed in the agent's region.
+
 ## Severity
 
 Levels: critical, high, medium, low.
@@ -702,7 +787,9 @@ are published to the notification topic; the others are stored only.
 [terraform-contract.md](terraform-contract.md) for its keys and indexes).
 
 - `pk = finding#{id}`: the finding. Fields: `finding_id`, `created_at`,
-  `env`, `alarm_name`, `alarm_arn`, `severity`, `severity_floor`,
+  `env`, `account_id` and `region` (where the signal's resource lives; null when
+  unknown, absent on findings stored before accounts), `alarm_name`, `alarm_arn`,
+  `severity`, `severity_floor`,
   `proposed_severity`, `title`, `summary`, `likely_cause`, `evidence` (list of
   `{kind, detail, steps}`, `steps` the trail steps the fact came from),
   `checked` (list of `{text, steps}`, the facts the agent verified, `steps`
@@ -718,7 +805,8 @@ are published to the notification topic; the others are stored only.
   `outcome` (`reported`, `incomplete`, or `triaged` for a finding triage wrote
   without an investigation), `ttl` (epoch seconds), and:
   - `kind`: `alarm`, `incident`, `grouped`, `linked`, `deferred` or `skipped`
-  - `resource_key`: the alarm's (or incident's) primary key, on every kind
+  - `resource_key`: the alarm's (or incident's) primary key, on every kind, scoped
+    `<account id>/<key>` for a member account
   - `incident_id` (grouped), `linked_to` (linked), `linked_alarms` (list)
   - `recurrence_count` (default 0) and `last_seen_at`: later firings of the
     alarm while the finding is open or acknowledged, or within its cooldown
@@ -784,6 +872,9 @@ are published to the notification topic; the others are stored only.
   investigator after each run; at or above `DAILY_TOKEN_BUDGET` a job is
   deferred. Budget items carry `count` and `ttl` (3 days) only, no
   `resource_key` or `status`, so they stay out of both indexes.
+- `pk = budget#account#{account}#{YYYY-MM-DDTHH}` and
+  `pk = budget#account#{account}#{YYYY-MM-DD}`: with member accounts, one account's
+  share of the hourly and daily budgets, shaped like the other budget items.
 
 The TTL attribute is `ttl` for every item kind.
 
@@ -1051,9 +1142,9 @@ The tools:
   (subject `repo@sha`) or `github.pulls.get` (subject `repo#number`)
 - `aws_call`: one page of one read-only operation by boto3 service name and
   operation (snake_case, or PascalCase normalised through the model). The
-  handler builds one client per service on first use, from a boto3 session on
-  the same botocore session the guard reads, with a 5 s connect and 20 s read
-  timeout and at most 2 attempts. An unknown service is an error naming the
+  job's session builds one client per service on first use, on a botocore
+  session that loads service models through the data loader the guard reads,
+  with a 5 s connect and 20 s read timeout and at most 2 attempts. An unknown service is an error naming the
   closest covered services; an unknown service or operation also names up to 5
   of the closest operations `aws_call` allows (in the service, or as
   `service.operation` across the covered services when the service is unknown):
@@ -1101,9 +1192,9 @@ Health, Service Quotas, Transfer, SSM, Secrets Manager, KMS, Amazon MQ, WAF,
 Network Firewall, CloudFormation, X-Ray, Application Signals and the tagging
 API); every other service is refused as `service not covered by aws_call`, and
 the suggestions for an unknown operation come only from these. Inside them, the
-blocked tables mirror the role's deny policy (`terraform/iam.tf`) in botocore
-service names (`stepfunctions` is IAM `states`, `elbv2` and `elb` are
-`elasticloadbalancing`). It refuses every operation the allowlist test forbids
+blocked tables mirror the roles' deny policy
+(`terraform/modules/shared/main.tf`) in botocore service names (`stepfunctions`
+is IAM `states`, `elbv2` and `elb` are `elasticloadbalancing`). It refuses every operation the allowlist test forbids
 in `tools.py`, and tests check that each blocked entry names a real operation
 of a covered service and that every streaming operation of a covered service is
 refused. To cover another service, add it to `ALLOWED_SERVICES` only after
