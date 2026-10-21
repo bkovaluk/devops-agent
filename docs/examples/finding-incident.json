@@ -1,0 +1,182 @@
+{
+  "account_id": "345678901234",
+  "actions": [
+    {
+      "command": null,
+      "detail": null,
+      "kind": "change",
+      "text": "Set catalog-search indices to 1 replica once green"
+    }
+  ],
+  "alarm_arn": "arn:aws:cloudwatch:us-east-1:345678901234:alarm:catalog-search-red-prod",
+  "alarm_count": 5,
+  "alarm_name": "catalog-search-red-prod",
+  "alarm_reason": "Threshold Crossed: 1 datapoint was greater than or equal to the threshold.",
+  "alarm_time": "2026-10-14T13:02:11+00:00",
+  "checked": [
+    {
+      "steps": [],
+      "text": "catalog-search is the only dependency all five services share."
+    }
+  ],
+  "confidence": "medium",
+  "confidence_reason": "The timing fits; the node replacement is inferred.",
+  "context_summary": {
+    "chars": 8412,
+    "counts": {
+      "changes": 2,
+      "log_patterns": 4,
+      "log_sources": 1,
+      "metric": 60,
+      "service_notes": 2,
+      "siblings": 1,
+      "sources_last_time": 3
+    },
+    "sections": {
+      "alarm": "available",
+      "changes": "available",
+      "database_events": "not_applicable",
+      "instance": "not_applicable",
+      "log_patterns": "available",
+      "log_sources": "available",
+      "metric": "available",
+      "service_notes": "available",
+      "siblings": "available",
+      "sources_last_time": "available"
+    },
+    "truncated": false
+  },
+  "created_at": "2026-10-14T13:04:11+00:00",
+  "env": "prod",
+  "error_signature": null,
+  "evidence": [
+    {
+      "detail": "Cluster health red, 2 unassigned primaries.",
+      "kind": "resource",
+      "steps": [
+        2
+      ]
+    },
+    {
+      "detail": "No deploy in the hour before the storm.",
+      "kind": "change",
+      "steps": [
+        1
+      ]
+    }
+  ],
+  "finding_id": "f1a3c5e7-9b2d-5f40-8c6e-1a3b5c7d9e20",
+  "fix_effort": "medium",
+  "fix_effort_reason": "Replica settings and an index restore, about a day.",
+  "hypotheses": [
+    {
+      "state": "likely",
+      "steps": [
+        2
+      ],
+      "text": "One shared dependency failed"
+    },
+    {
+      "state": "ruled_out",
+      "steps": [
+        1
+      ],
+      "text": "A shared deploy broke them"
+    }
+  ],
+  "incident_id": null,
+  "kind": "incident",
+  "last_seen_at": null,
+  "likely_cause": "Two primaries of catalog-search had no replica when a data node was replaced.",
+  "linked_alarms": [],
+  "linked_to": null,
+  "member_alarms": [
+    "catalog-search-red-prod",
+    "checkout-api-errors-prod",
+    "cart-web-5xx-prod",
+    "orders-queue-age-prod",
+    "invoice-render-errors-prod"
+  ],
+  "model_id": "us.anthropic.claude-opus-5-5",
+  "outcome": "reported",
+  "pk": "finding#f1a3c5e7-9b2d-5f40-8c6e-1a3b5c7d9e20",
+  "previous_finding_id": null,
+  "prior_finding_ids": [],
+  "proposed_severity": "critical",
+  "recurrence_count": 0,
+  "region": "us-east-1",
+  "resolution": null,
+  "resolved_at": null,
+  "resolved_by": null,
+  "resource_counts": {},
+  "resource_key": "345678901234|AWS/ES:DomainName=catalog-search",
+  "run": {
+    "duration_seconds": 61.3,
+    "max_turns": 14,
+    "stop_reason": "chose",
+    "token_budget": 250000,
+    "turns": 4,
+    "weighted_tokens": 45900
+  },
+  "severity": "critical",
+  "severity_floor": "critical",
+  "source": "cloudwatch",
+  "source_counts": {},
+  "sources_with_data": [
+    "recent_changes",
+    "describe_search_domain"
+  ],
+  "status": "open",
+  "steps": 4,
+  "suggested_actions": [
+    "Set catalog-search indices to 1 replica once green"
+  ],
+  "summary": "catalog-search lost a data node at 13:00 and went red; checkout, cart, orders and invoices all read it and failed within two minutes.",
+  "title": "Five services failed together when catalog-search went red",
+  "tokens_used": 71200,
+  "tool_call_count": 2,
+  "tool_trail": [
+    {
+      "args": {
+        "minutes": 60
+      },
+      "call": {
+        "action": "recent_changes",
+        "kind": "evidence",
+        "label": "aws.cloudtrail.recent_changes",
+        "provider": "aws",
+        "refused": null,
+        "service": "cloudtrail",
+        "subject": null
+      },
+      "input": "{\"minutes\": 60}",
+      "status": "data",
+      "step": 1,
+      "tool": "recent_changes"
+    },
+    {
+      "args": {
+        "domain_name": "catalog-search"
+      },
+      "call": {
+        "action": "describe_search_domain",
+        "kind": "evidence",
+        "label": "aws.opensearch.describe_search_domain",
+        "provider": "aws",
+        "refused": null,
+        "service": "opensearch",
+        "subject": "catalog-search"
+      },
+      "input": "{\"domain_name\": \"catalog-search\"}",
+      "status": "data",
+      "step": 2,
+      "tool": "describe_search_domain"
+    }
+  ],
+  "tools_used": [
+    "recent_changes",
+    "describe_search_domain"
+  ],
+  "ttl": 1799759051,
+  "weighted_tokens": 45900
+}

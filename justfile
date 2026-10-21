@@ -22,3 +22,7 @@ diagram:
     uv run python docs/diagram/architecture.py docs
     uv run python docs/diagram/multi_account.py docs
     uv run python docs/diagram/flows.py docs
+
+# Regenerate the example findings-table items in docs/examples.
+examples:
+    uv run python scripts/examples.py docs/examples

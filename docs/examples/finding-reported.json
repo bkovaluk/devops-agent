@@ -1,0 +1,290 @@
+{
+  "account_id": "345678901234",
+  "actions": [
+    {
+      "command": "aws lambda update-alias --function-name checkout-api-prod --name live --function-version 213",
+      "detail": null,
+      "kind": "change",
+      "text": "Point the live alias back to version 213"
+    },
+    {
+      "command": null,
+      "detail": "Read cart.get('currency', store.default_currency) at line 91 and add a test with a cart created before the field existed.",
+      "kind": "code",
+      "text": "Default the currency in pricing.py when a cart has none"
+    }
+  ],
+  "alarm_arn": "arn:aws:cloudwatch:us-east-1:345678901234:alarm:checkout-api-errors-prod",
+  "alarm_count": null,
+  "alarm_name": "checkout-api-errors-prod",
+  "alarm_reason": "Threshold Crossed: 1 datapoint was greater than or equal to the threshold.",
+  "alarm_time": "2026-10-14T13:02:11+00:00",
+  "checked": [
+    {
+      "steps": [
+        4
+      ],
+      "text": "No queue or stream feeds the function, so no failed message waits to be redriven."
+    },
+    {
+      "steps": [
+        1,
+        3
+      ],
+      "text": "The errors start within three minutes of the deploy, and no other change in the window touches the function."
+    }
+  ],
+  "confidence": "high",
+  "confidence_reason": "The error, the line and the deploy time agree.",
+  "context_summary": {
+    "chars": 8412,
+    "counts": {
+      "changes": 2,
+      "log_patterns": 4,
+      "log_sources": 1,
+      "metric": 60,
+      "service_notes": 2,
+      "siblings": 1,
+      "sources_last_time": 3
+    },
+    "sections": {
+      "alarm": "available",
+      "changes": "available",
+      "database_events": "not_applicable",
+      "instance": "not_applicable",
+      "log_patterns": "available",
+      "log_sources": "available",
+      "metric": "available",
+      "service_notes": "available",
+      "siblings": "available",
+      "sources_last_time": "available"
+    },
+    "truncated": false
+  },
+  "created_at": "2026-10-14T13:05:11+00:00",
+  "env": "prod",
+  "error_signature": "KeyError: 'currency' at checkout/pricing.py:91",
+  "evidence": [
+    {
+      "detail": "Errors went from 0 to 37 per minute at 13:01 UTC.",
+      "kind": "metric",
+      "steps": [
+        1
+      ]
+    },
+    {
+      "detail": "KeyError: 'currency' at checkout/pricing.py line 91 in all 20 recent error lines.",
+      "kind": "log",
+      "steps": [
+        2
+      ]
+    },
+    {
+      "detail": "UpdateFunctionCode and PublishVersion 214 on checkout-api-prod at 12:58 UTC by the deploy role.",
+      "kind": "change",
+      "steps": [
+        3
+      ]
+    },
+    {
+      "detail": "pricing.py line 91 reads cart['currency'] with no default.",
+      "kind": "code",
+      "steps": [
+        5
+      ]
+    }
+  ],
+  "finding_id": "5b0c1f9e-3c1a-5f7e-9a64-2f0d7b1c8e01",
+  "fix_effort": "low",
+  "fix_effort_reason": "A rollback restores service; the code fix is one line.",
+  "hypotheses": [
+    {
+      "state": "likely",
+      "steps": [
+        2,
+        3,
+        5
+      ],
+      "text": "Version 214 broke pricing for carts without a currency"
+    },
+    {
+      "state": "ruled_out",
+      "steps": [
+        2
+      ],
+      "text": "A downstream dependency is failing"
+    },
+    {
+      "state": "ruled_out",
+      "steps": [
+        4
+      ],
+      "text": "A queue is replaying bad messages"
+    }
+  ],
+  "incident_id": null,
+  "kind": "alarm",
+  "last_seen_at": null,
+  "likely_cause": "Version 214 reads cart['currency'] without a default; older carts have no such key.",
+  "linked_alarms": [],
+  "linked_to": null,
+  "member_alarms": [],
+  "model_id": "us.anthropic.claude-opus-5-5",
+  "outcome": "reported",
+  "pk": "finding#5b0c1f9e-3c1a-5f7e-9a64-2f0d7b1c8e01",
+  "previous_finding_id": "0e6f2d4a-8b7c-5d1e-a3f9-6c2b4e8d1a70",
+  "prior_finding_ids": [
+    "0e6f2d4a-8b7c-5d1e-a3f9-6c2b4e8d1a70"
+  ],
+  "proposed_severity": "high",
+  "recurrence_count": 0,
+  "region": "us-east-1",
+  "resolution": null,
+  "resolved_at": null,
+  "resolved_by": null,
+  "resource_counts": {},
+  "resource_key": "345678901234|AWS/Lambda:FunctionName=checkout-api-prod",
+  "run": {
+    "duration_seconds": 84.6,
+    "max_turns": 14,
+    "stop_reason": "chose",
+    "token_budget": 250000,
+    "turns": 7,
+    "weighted_tokens": 61230
+  },
+  "severity": "high",
+  "severity_floor": "high",
+  "source": "cloudwatch",
+  "source_counts": {},
+  "sources_with_data": [
+    "get_metric",
+    "query_logs",
+    "recent_changes",
+    "github_get_file"
+  ],
+  "status": "open",
+  "steps": 7,
+  "suggested_actions": [
+    "Point the live alias back to version 213: aws lambda update-alias --function-name checkout-api-prod --name live --function-version 213",
+    "Default the currency in pricing.py when a cart has none"
+  ],
+  "summary": "Errors on checkout-api-prod rose from 0 to 37 a minute at 13:01, three minutes after version 214 was deployed. Every failing invocation raises KeyError: 'currency' in pricing.py, where the new code reads cart['currency'], which carts created before the field existed do not carry.",
+  "title": "checkout-api fails on carts without a currency since the 12:58 deploy",
+  "tokens_used": 96480,
+  "tool_call_count": 5,
+  "tool_trail": [
+    {
+      "args": {
+        "dimensions": {
+          "FunctionName": "checkout-api-prod"
+        },
+        "metric_name": "Errors",
+        "minutes": 90,
+        "namespace": "AWS/Lambda",
+        "stat": "Sum"
+      },
+      "call": {
+        "action": "get_metric",
+        "kind": "evidence",
+        "label": "aws.cloudwatch.get_metric",
+        "provider": "aws",
+        "refused": null,
+        "service": "cloudwatch",
+        "subject": "AWS/Lambda/Errors"
+      },
+      "input": "{\"namespace\": \"AWS/Lambda\", \"metric_name\": \"Errors\", \"dimensions\": \"{\\\"FunctionName\\\": \\\"checkout-api-prod\\\"}\", \"stat\": \"Sum\", \"minutes\": 90}",
+      "status": "data",
+      "step": 1,
+      "tool": "get_metric"
+    },
+    {
+      "args": {
+        "log_group": "/aws/lambda/checkout-api-prod",
+        "query": "fields @timestamp, @message | filter @message like /Error/ | sort @timestamp desc | limit 20"
+      },
+      "call": {
+        "action": "query_logs",
+        "kind": "evidence",
+        "label": "aws.logs.query_logs",
+        "provider": "aws",
+        "refused": null,
+        "service": "logs",
+        "subject": "/aws/lambda/checkout-api-prod"
+      },
+      "input": "{\"log_group\": \"/aws/lambda/checkout-api-prod\", \"query\": \"fields @timestamp, @message | filter @message like /Error/ | sort @timestamp desc | limit 20\"}",
+      "status": "data",
+      "step": 2,
+      "tool": "query_logs"
+    },
+    {
+      "args": {
+        "minutes": 120
+      },
+      "call": {
+        "action": "recent_changes",
+        "kind": "evidence",
+        "label": "aws.cloudtrail.recent_changes",
+        "provider": "aws",
+        "refused": null,
+        "service": "cloudtrail",
+        "subject": null
+      },
+      "input": "{\"minutes\": 120}",
+      "status": "data",
+      "step": 3,
+      "tool": "recent_changes"
+    },
+    {
+      "args": {
+        "operation": "list_event_source_mappings",
+        "params": {
+          "FunctionName": "checkout-api-prod"
+        },
+        "service": "lambda"
+      },
+      "call": {
+        "action": "list_event_source_mappings",
+        "kind": "evidence",
+        "label": "aws.lambda.list_event_source_mappings",
+        "provider": "aws",
+        "refused": null,
+        "service": "lambda",
+        "subject": "checkout-api-prod"
+      },
+      "input": "{\"service\": \"lambda\", \"operation\": \"list_event_source_mappings\", \"params\": \"{\\\"FunctionName\\\": \\\"checkout-api-prod\\\"}\"}",
+      "status": "empty",
+      "step": 4,
+      "tool": "aws_call"
+    },
+    {
+      "args": {
+        "context": 20,
+        "line": 91,
+        "path": "checkout/pricing.py",
+        "repo": "checkout-api"
+      },
+      "call": {
+        "action": "get",
+        "kind": "evidence",
+        "label": "github.contents.get",
+        "provider": "github",
+        "refused": null,
+        "service": "contents",
+        "subject": "checkout-api/checkout/pricing.py"
+      },
+      "input": "{\"repo\": \"checkout-api\", \"path\": \"checkout/pricing.py\", \"line\": 91, \"context\": 20}",
+      "status": "data",
+      "step": 5,
+      "tool": "github_get_file"
+    }
+  ],
+  "tools_used": [
+    "get_metric",
+    "query_logs",
+    "recent_changes",
+    "aws_call",
+    "github_get_file"
+  ],
+  "ttl": 1799759111,
+  "weighted_tokens": 61230
+}

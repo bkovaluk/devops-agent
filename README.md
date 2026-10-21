@@ -204,7 +204,8 @@ tool (a dashboard, a CLI, a script) can set `status` `closed` with a `resolution
 (`confirmed`, `false_positive`, `wrong` or `dismissed`), `resolved_at` and
 `resolved_by`. Reviewed findings become memory for later investigations of the same
 resource and eval cases. The full item schema and the resolution contract are in
-[docs/architecture.md](docs/architecture.md).
+[docs/architecture.md](docs/architecture.md); [docs/examples](docs/examples/README.md)
+holds one example item per kind of finding, with a field guide.
 
 ## Configuring the agent for your environment
 
