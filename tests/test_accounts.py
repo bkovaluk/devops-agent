@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from botocore.exceptions import EndpointConnectionError
+from botocore.exceptions import EndpointConnectionError, NoCredentialsError
 from pydantic import ValidationError
 
 from devops_agent import accounts
@@ -226,11 +226,26 @@ def test_multi_account_settings_default_off(monkeypatch: pytest.MonkeyPatch) -> 
     assert configure(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read").multi_account is True
 
 
+def test_external_id_is_a_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = configure(monkeypatch, MEMBER_EXTERNAL_ID="org-external-1")
+    assert "org-external-1" not in repr(settings)
+    assert settings.member_external_id is not None
+    assert settings.member_external_id.get_secret_value() == "org-external-1"
+
+
+def test_invalid_external_id_is_not_echoed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MEMBER_EXTERNAL_ID", "secret value")
+    with pytest.raises(ValidationError) as raised:
+        Settings()  # type: ignore[call-arg]
+    assert "secret value" not in str(raised.value)
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     [
         ("MEMBER_ROLE_NAME", "role with spaces"),
         ("MEMBER_EXTERNAL_ID", "x"),
+        ("MEMBER_EXTERNAL_ID", "has spaces"),
         ("DATADOG_ACCOUNT_TAG", "Account"),
     ],
 )
@@ -248,10 +263,24 @@ def test_multi_account_settings_are_validated(
 def test_member_keys_are_scoped_and_own_keys_are_not() -> None:
     key = "AWS/Lambda:FunctionName=payment-api-prod"
     assert scoped_key(key, "") == key
-    assert scoped_key(key, MEMBER) == f"{MEMBER}/{key}"
-    assert local_key(f"{MEMBER}/{key}") == key
+    assert scoped_key(key, MEMBER) == f"{MEMBER}|{key}"
+    assert local_key(f"{MEMBER}|{key}") == key
     assert local_key(key) == key
     assert local_key("alarm:a/b") == "alarm:a/b"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        f"{MEMBER}/Custom:Name=x",
+        f"{MEMBER}/Custom/Errors:Queue=a|b",
+        "alarm:123456789012|errors",
+        "datadog:monitor=7/env:prod",
+    ],
+)
+def test_an_own_key_that_starts_with_an_account_id_is_not_read_as_scoped(key: str) -> None:
+    assert local_key(key) == key
+    assert local_key(scoped_key(key, MEMBER)) == key
 
 
 # Sessions
@@ -383,13 +412,57 @@ def test_refused_assume_role_names_the_role_and_the_code(monkeypatch: pytest.Mon
         _open(settings, sts)
     arn = role_arn("aws", MEMBER, "devops-agent-read")
     assert str(raised.value) == f"AssumeRole of {arn} failed (AccessDenied)"
+    assert raised.value.code == "AccessDenied"
+    assert not raised.value.transient
+
+
+@pytest.mark.parametrize(
+    ("code", "transient"),
+    [
+        ("Throttling", True),
+        ("ServiceUnavailable", True),
+        ("RegionDisabledException", False),
+        ("MalformedPolicyDocument", False),
+        ("PackedPolicyTooLarge", False),
+    ],
+)
+def test_only_transient_assume_role_errors_are_marked_for_retry(
+    monkeypatch: pytest.MonkeyPatch, code: str, transient: bool
+) -> None:
+    settings = configure(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read")
+    sts, stubber = stubbed_sts()
+    stubber.add_client_error("assume_role", code, "detail")
+    with pytest.raises(AccountAccessError) as raised:
+        _open(settings, sts)
+    assert raised.value.code == code
+    assert raised.value.transient is transient
+
+
+def test_refusal_by_settings_is_not_transient(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(AccountAccessError) as raised:
+        _open(configure(monkeypatch), FakeClient())
+    assert raised.value.code == ""
+    assert not raised.value.transient
 
 
 def test_unreachable_sts_is_an_account_access_error(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = configure(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read")
     sts = FakeClient({"assume_role": EndpointConnectionError(endpoint_url="https://sts")})
-    with pytest.raises(AccountAccessError, match=r"failed \(EndpointConnectionError\)"):
+    with pytest.raises(AccountAccessError, match=r"failed \(EndpointConnectionError\)") as raised:
         _open(settings, sts)
+    assert raised.value.code == "EndpointConnectionError"
+    assert raised.value.transient
+
+
+def test_botocore_error_other_than_a_connection_is_not_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = configure(monkeypatch, MEMBER_ROLE_NAME="devops-agent-read")
+    sts = FakeClient({"assume_role": NoCredentialsError()})
+    with pytest.raises(AccountAccessError) as raised:
+        _open(settings, sts)
+    assert raised.value.code == "NoCredentialsError"
+    assert not raised.value.transient
 
 
 def test_sessions_never_share_credentials(monkeypatch: pytest.MonkeyPatch) -> None:

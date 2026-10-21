@@ -15,7 +15,7 @@ from devops_agent import handler as handler_module
 from devops_agent.accounts import MIN_SESSION_SECONDS
 from devops_agent.config import get_settings
 from devops_agent.handler import AgentClients, handler
-from devops_agent.models import ContextSummary, InvestigationJob, Severity
+from devops_agent.models import ContextSummary, InvestigationJob, Severity, scoped_key
 from devops_agent.precheck import IncidentContext
 from devops_agent.tools import ToolContext
 from tests.conftest import (
@@ -108,7 +108,7 @@ def member_job(account: str = MEMBER_ACCOUNT, finding_id: str | None = None) -> 
             "kind": "alarm",
             "alarms": [member_alarm_event(account=account)],
             "alarm_count": 1,
-            "keys": [f"{account}/{FUNCTION_KEY}"],
+            "keys": [scoped_key(FUNCTION_KEY, account)],
             "floor": Severity.HIGH,
             "account_id": account,
             "region": "us-east-1",
@@ -168,7 +168,7 @@ def test_member_job_reads_every_aws_client_through_the_member_role(run: Run) -> 
     assert item["outcome"] == "reported"
     assert item["account_id"] == MEMBER_ACCOUNT
     assert item["region"] == "us-east-1"
-    assert item["resource_key"] == f"{MEMBER_ACCOUNT}/{FUNCTION_KEY}"
+    assert item["resource_key"] == scoped_key(FUNCTION_KEY, MEMBER_ACCOUNT)
     assert len(run.bedrock.calls) == 1
 
 
@@ -263,7 +263,7 @@ def test_recall_and_remembered_sources_are_scoped_by_account(run: Run) -> None:
     handler(_event(member_job(finding_id="f-1")), lambda_context())
     assert run.past_sources == [[]]
     prompt = json.dumps(run.bedrock.calls[0]["messages"])
-    assert f"No reviewed prior findings on {MEMBER_ACCOUNT}/{FUNCTION_KEY}." in prompt
+    assert f"No reviewed prior findings on {scoped_key(FUNCTION_KEY, MEMBER_ACCOUNT)}." in prompt
     item = run.table.items["finding#f-1"]
     assert item["previous_finding_id"] is None
     assert item["prior_finding_ids"] == []

@@ -12,13 +12,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 ALARM_STATE_CHANGE = "CloudWatch Alarm State Change"
 DATADOG_ALERT = "Datadog Alert Notification"
 
-# A resource key scoped to a member account: "<12-digit account id>/<key>".
-_SCOPED_KEY = re.compile(r"^(\d{12})/(.+)$", re.DOTALL)
+# A resource key scoped to a member account: "<12-digit account id>|<key>". Every key
+# starts with a CloudWatch namespace, "alarm:" or "datadog:", and a namespace cannot hold
+# "|", so an unscoped key never looks scoped.
+_SCOPED_KEY = re.compile(r"^(\d{12})\|(.+)$", re.DOTALL)
 
 
 def scoped_key(key: str, account_id: str) -> str:
     """The key of a resource in a member account; the agent's own keys stay as they are."""
-    return f"{account_id}/{key}" if account_id else key
+    return f"{account_id}|{key}" if account_id else key
 
 
 def local_key(key: str) -> str:

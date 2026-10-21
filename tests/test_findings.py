@@ -735,14 +735,14 @@ def test_triage_finding_records_the_signals_account() -> None:
         env="prod",
         kind=FindingKind.SKIPPED,
         signal=signal,
-        resource_key=f"444455556666/{FUNCTION_KEY}",
+        resource_key=f"444455556666|{FUNCTION_KEY}",
         floor=Severity.HIGH,
         now=NOW,
         title="Skipped",
         summary="Skipped.",
     )
     assert finding.account_id == "444455556666"
-    assert finding.resource_key == f"444455556666/{FUNCTION_KEY}"
+    assert finding.resource_key == f"444455556666|{FUNCTION_KEY}"
 
 
 def test_finding_of_an_unknown_account_stores_none() -> None:
@@ -788,4 +788,4 @@ def test_findings_stored_before_accounts_are_still_recalled_and_cool_down() -> N
         limit=50,
     )
     assert cooled is not None
-    assert prior_findings(table, f"444455556666/{FUNCTION_KEY}", 25) == []
+    assert prior_findings(table, f"444455556666|{FUNCTION_KEY}", 25) == []

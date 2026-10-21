@@ -6,10 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 from devops_agent.gate import (
     add_daily_tokens,
+    consume_account_daily_budget,
+    consume_account_p1_overflow,
     consume_daily_budget,
     consume_hourly_budget,
     daily_tokens,
     hourly_count,
+    refund_account_p1_overflow,
     refund_daily_budget,
     refund_hourly_budget,
 )
@@ -85,3 +88,20 @@ def test_daily_tokens_are_apart_from_the_investigation_counters() -> None:
     assert consume_daily_budget(table, 1, NOW)
     assert hourly_count(table, NOW) == 0
     assert daily_tokens(table, NOW) == 9_000
+
+
+def test_account_p1_overflow_counts_per_account_and_utc_day() -> None:
+    table = FakeTable()
+    assert consume_account_p1_overflow(table, 1, NOW, "444455556666")
+    assert table.updates[0]["Key"] == {"pk": "budget#account#444455556666#p1#day#2026-09-29"}
+    assert not consume_account_p1_overflow(table, 1, NOW, "444455556666")
+    assert consume_account_p1_overflow(table, 1, NOW, "777788889999")
+    assert consume_account_p1_overflow(table, 1, NOW + timedelta(days=1), "444455556666")
+    refund_account_p1_overflow(table, NOW, "444455556666")
+    assert table.items["budget#account#444455556666#p1#day#2026-09-29"]["count"] == 1
+
+
+def test_account_p1_overflow_is_apart_from_the_accounts_daily_share() -> None:
+    table = FakeTable()
+    assert consume_account_p1_overflow(table, 1, NOW, "444455556666")
+    assert consume_account_daily_budget(table, 1, NOW, "444455556666")

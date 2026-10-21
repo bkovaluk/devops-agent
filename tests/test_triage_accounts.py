@@ -14,7 +14,7 @@ from pytest_mock import MockerFixture
 from devops_agent import decisions as decisions_module
 from devops_agent import triage as triage_module
 from devops_agent.accounts import AccountAccessError
-from devops_agent.models import InvestigationJob
+from devops_agent.models import InvestigationJob, scoped_key
 from devops_agent.triage import TriageClients, handler
 from tests.conftest import (
     ALARM_NAME,
@@ -37,8 +37,8 @@ from tests.conftest import (
 )
 
 FUNCTION = "payment-api-prod"
-MEMBER_KEY = f"{MEMBER_ACCOUNT}/{FUNCTION_KEY}"
-OTHER_KEY = f"{OTHER_ACCOUNT}/{FUNCTION_KEY}"
+MEMBER_KEY = scoped_key(FUNCTION_KEY, MEMBER_ACCOUNT)
+OTHER_KEY = scoped_key(FUNCTION_KEY, OTHER_ACCOUNT)
 
 
 def _cloudwatch(account: str, tags: dict[str, str]) -> FakeClient:
@@ -190,6 +190,11 @@ def _day_pk(account: str = "") -> str:
     return f"budget#{scope}{_now().strftime('%Y-%m-%d')}"
 
 
+def _overflow_pk(account: str = "") -> str:
+    scope = f"account#{account}#" if account else ""
+    return f"budget#{scope}p1#day#{_now().strftime('%Y-%m-%d')}"
+
+
 # Accounts of signals
 
 
@@ -304,7 +309,7 @@ def test_an_incident_never_mixes_accounts(clients: TriageClients) -> None:
     grouped = _findings(clients, "grouped")
     member_grouped = [item for item in grouped if item["account_id"] == MEMBER_ACCOUNT]
     assert len(member_grouped) == 4
-    assert all(item["resource_key"].startswith(f"{MEMBER_ACCOUNT}/") for item in member_grouped)
+    assert all(item["resource_key"].startswith(f"{MEMBER_ACCOUNT}|") for item in member_grouped)
 
 
 def test_one_account_deployment_keys_and_counts_as_before(
@@ -383,16 +388,40 @@ def test_alarm_without_a_trusted_account_or_from_another_region_is_refused(
 
 
 @pytest.mark.usefixtures("members")
-def test_member_role_that_cannot_be_assumed_fails_the_record_for_retry(
-    clients: TriageClients, mocker: MockerFixture
+@pytest.mark.parametrize("code", ["Throttling", "EndpointConnectionError"])
+def test_transient_assume_role_failure_fails_the_record_for_retry(
+    clients: TriageClients, mocker: MockerFixture, code: str
 ) -> None:
-    mocker.patch.object(
-        triage_module, "open_session", side_effect=AccountAccessError("AssumeRole failed")
-    )
+    error = AccountAccessError(f"AssumeRole failed ({code})", code=code, transient=True)
+    mocker.patch.object(triage_module, "open_session", side_effect=error)
     result = _triage(member_alarm_event(), alarm_event(name="own-errors"))
     assert result == {"batchItemFailures": [{"itemIdentifier": "msg-1"}]}
     [work] = _jobs(clients)
     assert work.account_id == OWN_ACCOUNT
+
+
+@pytest.mark.usefixtures("members")
+@pytest.mark.parametrize("code", ["AccessDenied", "RegionDisabledException", "MalformedPolicy"])
+def test_member_role_that_refuses_to_be_assumed_is_a_skipped_account(
+    clients: TriageClients, mocker: MockerFixture, capsys: pytest.CaptureFixture[str], code: str
+) -> None:
+    arn = f"arn:aws:iam::{MEMBER_ACCOUNT}:role/devops-agent-read"
+    error = AccountAccessError(f"AssumeRole of {arn} failed ({code})", code=code)
+    mocker.patch.object(triage_module, "open_session", side_effect=error)
+    info = mocker.spy(decisions_module.logger, "info")
+    assert _triage(member_alarm_event()) == {"batchItemFailures": []}
+    assert _refused(clients, capsys) == [
+        {
+            "env": "prod",
+            "source": "cloudwatch",
+            "decision": "skipped_account",
+            "account": MEMBER_ACCOUNT,
+        }
+    ]
+    [call] = [
+        call for call in info.call_args_list if call.args[0] == "dropped: account not investigated"
+    ]
+    assert call.kwargs["extra"]["reason"] == f"AssumeRole of {arn} failed ({code})"
 
 
 # Datadog accounts
@@ -414,7 +443,7 @@ def test_datadog_monitor_account_tag_scopes_its_signal(
     [work] = _jobs(clients)
     assert work.account_id == MEMBER_ACCOUNT
     assert work.region == "us-east-1"
-    assert work.keys == [f"{MEMBER_ACCOUNT}/{ECS_SERVICE_KEY}"]
+    assert work.keys == [scoped_key(ECS_SERVICE_KEY, MEMBER_ACCOUNT)]
 
 
 @pytest.mark.usefixtures("members")
@@ -533,9 +562,58 @@ def test_priority_1_past_its_accounts_share_takes_the_overflow(
     _triage(member_alarm_event())
     [work] = _jobs(clients)
     assert work.floor == "critical"
-    overflow = "budget#p1#day#" + _now().strftime("%Y-%m-%d")
-    assert clients.table.items[overflow]["count"] == 1
-    assert clients.table.items[_hour_pk(MEMBER_ACCOUNT)]["count"] == 5
+    items = clients.table.items
+    assert items[_overflow_pk()]["count"] == 1
+    assert items[_overflow_pk(MEMBER_ACCOUNT)]["count"] == 1
+    assert items[_hour_pk(MEMBER_ACCOUNT)]["count"] == 5
+
+
+def test_one_account_cannot_take_the_whole_priority_1_overflow(
+    clients: TriageClients, members: Members
+) -> None:
+    for account in (MEMBER_ACCOUNT, OTHER_ACCOUNT):
+        members.tags[account] = {"Severity": "critical"}
+        _counter(clients.table, _hour_pk(account), 5)
+    _counter(clients.table, _overflow_pk(MEMBER_ACCOUNT), 5)
+    _triage(member_alarm_event(), member_alarm_event(account=OTHER_ACCOUNT))
+    [work] = _jobs(clients)
+    assert work.account_id == OTHER_ACCOUNT
+    [deferred] = _findings(clients, "deferred")
+    assert deferred["account_id"] == MEMBER_ACCOUNT
+    assert (
+        f"account {MEMBER_ACCOUNT}'s share of the hourly budget is spent and so is account "
+        f"{MEMBER_ACCOUNT}'s priority 1 overflow" in deferred["summary"]
+    )
+    items = clients.table.items
+    assert items[_overflow_pk()]["count"] == 1
+    assert items[_overflow_pk(MEMBER_ACCOUNT)]["count"] == 5
+    assert items[_overflow_pk(OTHER_ACCOUNT)]["count"] == 1
+    assert items[_hour_pk()]["count"] == 0
+    assert items[_day_pk()]["count"] == 1
+
+
+def test_account_priority_1_overflow_is_configurable(
+    clients: TriageClients, members: Members, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set(monkeypatch, ACCOUNT_HOURLY_BUDGET="0", ACCOUNT_P1_DAILY_OVERFLOW="1")
+    members.tags[MEMBER_ACCOUNT] = {"Severity": "critical"}
+    _triage(member_alarm_event(name="a-errors"), member_alarm_event(name="b-errors"))
+    assert len(_jobs(clients)) == 1
+    assert clients.table.items[_overflow_pk(MEMBER_ACCOUNT)]["count"] == 1
+
+
+def test_global_priority_1_overflow_still_caps_every_account(
+    clients: TriageClients, members: Members
+) -> None:
+    members.tags[MEMBER_ACCOUNT] = {"Severity": "critical"}
+    _counter(clients.table, _hour_pk(MEMBER_ACCOUNT), 5)
+    _counter(clients.table, _overflow_pk(), 10)
+    _triage(member_alarm_event())
+    assert _jobs(clients) == []
+    [deferred] = _findings(clients, "deferred")
+    assert "and so is the priority 1 overflow" in deferred["summary"]
+    assert clients.table.items[_overflow_pk()]["count"] == 10
+    assert _overflow_pk(MEMBER_ACCOUNT) not in clients.table.items
 
 
 # Storms per account
@@ -579,7 +657,7 @@ def test_storm_in_one_account_groups_only_that_accounts_signals(clients: TriageC
     [storm] = _findings(clients, "storm")
     assert storm["finding_id"] == items[f"storm#active#{MEMBER_ACCOUNT}"]["finding_id"]
     assert storm["account_id"] == MEMBER_ACCOUNT
-    assert all(key.startswith(f"{MEMBER_ACCOUNT}/") for key in storm["resource_counts"])
+    assert all(key.startswith(f"{MEMBER_ACCOUNT}|") for key in storm["resource_counts"])
     assert sorted(work.account_id for work in _jobs(clients)) == [OWN_ACCOUNT, MEMBER_ACCOUNT]
     grouped = _findings(clients, "grouped")
     assert len(grouped) == 2

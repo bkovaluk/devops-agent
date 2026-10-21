@@ -5,7 +5,8 @@ A job is counted before it is sent and refunded when it is refused or not sent, 
 budget counters only keep the jobs that reached the work queue: the hourly and daily
 budgets, the Datadog share of the hourly budget, and the priority 1 overflow past the
 hourly budget. With member accounts, each account's jobs are also counted against its
-own share of the hourly and daily budgets, so one noisy account cannot spend the others'.
+own share of the hourly and daily budgets and of the priority 1 overflow, so one noisy
+account cannot spend the others'.
 The investigator adds each run's cost-weighted tokens to the day's token counter once the
 run ends. Triage adds the signals it accepts to a 5-minute rate bucket, one per member
 account (``scope``) and one for the agent's own account.
@@ -46,6 +47,10 @@ def _account_hour_key(account_id: str, now: datetime) -> str:
 
 def _account_day_key(account_id: str, now: datetime) -> str:
     return f"budget#account#{account_id}#{now.strftime('%Y-%m-%d')}"
+
+
+def _account_p1_overflow_key(account_id: str, now: datetime) -> str:
+    return f"budget#account#{account_id}#p1#day#{now.strftime('%Y-%m-%d')}"
 
 
 def _rate_key(at: datetime, scope: str) -> str:
@@ -139,6 +144,16 @@ def consume_account_daily_budget(table: Any, limit: int, now: datetime, account_
 
 def refund_account_daily_budget(table: Any, now: datetime, account_id: str) -> None:
     _add(table, _account_day_key(account_id, now), -1, now)
+
+
+def consume_account_p1_overflow(table: Any, limit: int, now: datetime, account_id: str) -> bool:
+    """Count one priority 1 job past the hourly budget against its account's share of
+    today's overflow. False once past the cap."""
+    return _add(table, _account_p1_overflow_key(account_id, now), 1, now) <= limit
+
+
+def refund_account_p1_overflow(table: Any, now: datetime, account_id: str) -> None:
+    _add(table, _account_p1_overflow_key(account_id, now), -1, now)
 
 
 def add_signals(table: Any, count: int, now: datetime, scope: str = "") -> int:

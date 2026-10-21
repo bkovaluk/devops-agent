@@ -34,6 +34,7 @@ from aws_lambda_powertools import Logger
 from botocore.exceptions import ClientError
 
 from devops_agent.accounts import (
+    AccountAccessError,
     AccountSession,
     alarm_origin,
     function_partition,
@@ -59,6 +60,7 @@ from devops_agent.findings import (
 from devops_agent.gate import (
     consume_account_daily_budget,
     consume_account_hourly_budget,
+    consume_account_p1_overflow,
     consume_daily_budget,
     consume_datadog_share,
     consume_hourly_budget,
@@ -67,6 +69,7 @@ from devops_agent.gate import (
     hourly_count,
     refund_account_daily_budget,
     refund_account_hourly_budget,
+    refund_account_p1_overflow,
     refund_daily_budget,
     refund_datadog_share,
     refund_hourly_budget,
@@ -490,9 +493,11 @@ def _settle_alarm(accounts: _Accounts, settings: TriageSettings, candidate: _Can
     """Keys, tags and floor of a CloudWatch alarm, read in its account. True when the
     alarm needs no job.
 
-    An alarm from an account or region the agent may not read is dropped. A retried alarm
-    no longer in the ALARM episode it was deferred in is dropped too: it went back to OK,
-    or its newer episode came with its own event.
+    An alarm from an account or region the agent may not read is dropped, and so is one
+    whose member role refuses to be assumed; only a transient AssumeRole failure fails
+    the record for SQS to retry. A retried alarm no longer in the ALARM episode it was
+    deferred in is dropped too: it went back to OK, or its newer episode came with its
+    own event.
     """
     signal = candidate.signal
     reason = alarm_origin(signal) or refusal(
@@ -500,7 +505,12 @@ def _settle_alarm(accounts: _Accounts, settings: TriageSettings, candidate: _Can
     )
     if reason is not None:
         return _refuse_account(settings, candidate, reason)
-    readers = accounts.readers(signal.account_id)
+    try:
+        readers = accounts.readers(signal.account_id)
+    except AccountAccessError as exc:
+        if exc.transient:
+            raise
+        return _refuse_account(settings, candidate, str(exc))
     event = alarm_event(signal)
     config = _alarm_config(readers, candidate.name)
     if candidate.retry and not same_episode(config, event):
@@ -819,8 +829,9 @@ def _charge(
 
     The hourly budget (and, for a Datadog job, the Datadog share of it, and with member
     accounts the job's account's share) comes first; a priority 1 job past any of them
-    takes the day's priority 1 overflow instead. The daily budget, and with member
-    accounts the account's share of it, applies to every job.
+    takes the day's priority 1 overflow instead, and with member accounts its account's
+    share of that overflow too. The daily budget, and with member accounts the account's
+    share of it, applies to every job.
     """
     table = clients.table
     account = job.account_id
@@ -844,6 +855,13 @@ def _charge(
         if not consume_p1_overflow(table, settings.p1_daily_overflow, now):
             charges.refund(table, now)
             return _Refusal(f"{reason} and so is the priority 1 overflow")
+        if settings.multi_account:
+            charges.refunds.append(partial(refund_account_p1_overflow, account_id=account))
+            if not consume_account_p1_overflow(
+                table, settings.account_p1_daily_overflow, now, account
+            ):
+                charges.refund(table, now)
+                return _Refusal(f"{reason} and so is account {account}'s priority 1 overflow")
     charges.refunds.append(refund_daily_budget)
     if not consume_daily_budget(table, settings.daily_budget, now):
         charges.refund(table, now)

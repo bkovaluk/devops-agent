@@ -12,12 +12,17 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 Environment = Literal["dev", "qa", "staging", "prod"]
 
 _ACCOUNT_ID = re.compile(r"^\d{12}$")
+# The characters STS accepts in an external id.
+_EXTERNAL_ID = re.compile(r"^[\w+=,.@:/-]+$")
 
 
 class Settings(BaseSettings):
     """Lambda configuration read from environment variables."""
 
-    model_config = SettingsConfigDict(env_prefix="", protected_namespaces=())
+    # A validation error never quotes the value it rejected: several settings are secrets.
+    model_config = SettingsConfigDict(
+        env_prefix="", protected_namespaces=(), hide_input_in_errors=True
+    )
 
     environment: Environment = "dev"
     findings_table: str
@@ -66,9 +71,7 @@ class Settings(BaseSettings):
     # Many accounts: the read-only role every member account lends the agent. Unset, the
     # agent reads only the account it runs in.
     member_role_name: str | None = Field(default=None, pattern=r"^[\w+=,.@-]{1,64}$")
-    member_external_id: str | None = Field(
-        default=None, min_length=2, max_length=1224, pattern=r"^[\w+=,.@:/-]+$"
-    )
+    member_external_id: SecretStr | None = Field(default=None, min_length=2, max_length=1224)
     # When set, signals from any other account are refused.
     allowed_account_ids: Annotated[frozenset[str], NoDecode] = frozenset()
     # The Datadog monitor tag whose value names the AWS account a monitor watches.
@@ -84,6 +87,13 @@ class Settings(BaseSettings):
             if invalid:
                 raise ValueError(f"not 12-digit account ids: {', '.join(map(str, invalid))}")
             return frozenset(str(item) for item in value)
+        return value
+
+    @field_validator("member_external_id")
+    @classmethod
+    def _external_id_characters(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not _EXTERNAL_ID.match(value.get_secret_value()):
+            raise ValueError("may contain only letters, digits and _+=,.@:/-")
         return value
 
     @model_validator(mode="after")
@@ -120,9 +130,11 @@ class TriageSettings(Settings):
     datadog_hourly_share: int = Field(default=6, ge=0)
     # Signals per 5-minute bucket above which two buckets in a row are a storm.
     storm_rate: int = Field(default=30, ge=1)
-    # With member accounts, the jobs one account may use of the hourly and daily budgets.
+    # With member accounts, the jobs one account may use of the hourly and daily budgets
+    # and of the day's priority 1 overflow.
     account_hourly_budget: int = Field(default=5, ge=0)
     account_daily_budget: int = Field(default=25, ge=0)
+    account_p1_daily_overflow: int = Field(default=5, ge=0)
 
 
 @lru_cache(maxsize=1)

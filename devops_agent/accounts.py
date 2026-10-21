@@ -8,7 +8,7 @@ cross-checked with the alarm ARN; a Datadog signal's is the value of its monitor
 cannot be told, is not in ``ALLOWED_ACCOUNT_IDS`` when that is set, or is another account
 while no member role is configured, and one from another region.
 
-A member account's resource keys are scoped as ``<account id>/<key>`` (models.scoped_key),
+A member account's resource keys are scoped as ``<account id>|<key>`` (models.scoped_key),
 so findings, claims, cooldowns, links and remembered sources of two accounts never meet;
 the agent's own account keeps its keys as they are.
 
@@ -27,7 +27,8 @@ from typing import Any
 import boto3
 import botocore.session
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
+from botocore.exceptions import ConnectionError as BotoConnectionError
 
 from devops_agent.config import Settings
 from devops_agent.models import SignalRef
@@ -45,9 +46,39 @@ AWS_CALL_CLIENT_CONFIG = Config(
 )
 
 
+# STS errors that may clear on their own. Every other refusal (AccessDenied from the
+# role's trust policy or because the role does not exist, a malformed or oversized
+# policy, a region disabled for STS) stands until someone changes the account.
+TRANSIENT_STS_ERRORS = frozenset(
+    {
+        "Throttling",
+        "ThrottlingException",
+        "RequestLimitExceeded",
+        "TooManyRequestsException",
+        "ServiceUnavailable",
+        "ServiceUnavailableException",
+        "InternalFailure",
+        "InternalError",
+        "RequestTimeout",
+        "RequestTimeoutException",
+        "IDPCommunicationError",
+    }
+)
+
+
 class AccountAccessError(Exception):
     """The job's account cannot be read. The message names the account, the role and an
-    AWS error code only, so it is safe to store on a finding."""
+    AWS error code only, so it is safe to store on a finding.
+
+    ``code`` is the AWS error code (or the botocore error class) when AssumeRole failed,
+    empty when the agent's own settings refused the account. ``transient`` is whether
+    the same call may succeed later.
+    """
+
+    def __init__(self, message: str, *, code: str = "", transient: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.transient = transient
 
 
 def _arn_field(arn: str, index: int) -> str:
@@ -184,9 +215,18 @@ def _assume(sts: Any, arn: str, name: str, seconds: int, external_id: str | None
         credentials: dict[str, str] = sts.assume_role(**params)["Credentials"]
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code") or "ClientError"
-        raise AccountAccessError(f"AssumeRole of {arn} failed ({code})") from None
+        raise AccountAccessError(
+            f"AssumeRole of {arn} failed ({code})",
+            code=code,
+            transient=code in TRANSIENT_STS_ERRORS,
+        ) from None
     except BotoCoreError as exc:
-        raise AccountAccessError(f"AssumeRole of {arn} failed ({type(exc).__name__})") from None
+        code = type(exc).__name__
+        raise AccountAccessError(
+            f"AssumeRole of {arn} failed ({code})",
+            code=code,
+            transient=isinstance(exc, BotoConnectionError | HTTPClientError),
+        ) from None
     return credentials
 
 
@@ -216,8 +256,13 @@ def open_session(
     if not settings.member_role_name:
         raise AccountAccessError(f"account {account_id} needs MEMBER_ROLE_NAME, which is not set")
     arn = role_arn(partition, account_id, settings.member_role_name)
+    external_id = settings.member_external_id
     credentials = _assume(
-        sts, arn, name, session_seconds(seconds_left), settings.member_external_id
+        sts,
+        arn,
+        name,
+        session_seconds(seconds_left),
+        external_id.get_secret_value() if external_id else None,
     )
     session = boto3.session.Session(
         botocore_session=_botocore(),
