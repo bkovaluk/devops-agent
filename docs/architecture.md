@@ -194,9 +194,11 @@ and a Datadog monitor on one resource link and cool down together.
   Kubernetes workload keys (from `kube_deployment`, `kube_namespace` and the cluster)
   are future work; EKS signals use the fallback key until then.
 - **Accounts.** A signal from a member account (any account but the agent's own) has
-  every key scoped by its account id: `<account id>/<key>`, for example
-  `444455556666/AWS/Lambda:FunctionName=x`. The agent's own account keeps its keys as
-  above, so a deployment without member accounts keys exactly as before and its stored
+  every key scoped by its account id: `<account id>|<key>`, for example
+  `444455556666|AWS/Lambda:FunctionName=x`. Every key starts with a CloudWatch
+  namespace, `alarm:` or `datadog:`, and a namespace cannot contain `|`, so no unscoped
+  key reads as scoped (a custom namespace may well be `444455556666/Errors`). The
+  agent's own account keeps its keys as above, so a deployment without member accounts keys exactly as before and its stored
   findings, `active#`, `obs#` and cooldowns keep working. Every item keyed by a resource
   (findings on `by_resource`, `active#`, `obs#`, a storm's `resource_counts`) therefore
   separates accounts, and two accounts with the same resource name never meet. The
@@ -284,13 +286,21 @@ Every threshold is a `TriageSettings` field, overridable by its environment vari
 | `MAX_DEFERRED_RETRIES` | 8 | see Deferred retries |
 | `ACCOUNT_HOURLY_BUDGET` | 5 | with `MEMBER_ROLE_NAME` set, jobs one account may use per UTC hour (`budget#account#<account>#<YYYY-MM-DDTHH>`), within the hourly budget |
 | `ACCOUNT_DAILY_BUDGET` | 25 | with `MEMBER_ROLE_NAME` set, jobs one account may use per UTC day (`budget#account#<account>#<YYYY-MM-DD>`), within the daily budget |
+| `ACCOUNT_P1_DAILY_OVERFLOW` | 5 | with `MEMBER_ROLE_NAME` set, priority 1 jobs one account may run past the hourly budget per UTC day (`budget#account#<account>#p1#day#<YYYY-MM-DD>`), within the overflow |
 
 Besides these, a low-floor job is refused once the hour's count is half the hourly
 budget. The order is: the low floor rule, the reserve and the token budget (no counter
 moves), then the `active#` claim, then the hourly budget (and the Datadog share for a
 Datadog job, and with member accounts the job's account's hourly share; a priority 1
-job past any of them takes the overflow), then the daily budget and with member
-accounts the account's daily share. The token budgets stay global.
+job past any of them takes the overflow, and with member accounts its account's share
+of the overflow too), then the daily budget and with member accounts the account's
+daily share. The token budgets stay global.
+
+An account share bounds what one account can take of a global budget; the global
+budget still caps the sum. Size each share at about the global budget divided by the
+number of accounts expected to be noisy at once (the defaults, half of each, let two
+accounts spend a budget while a third waits). A share equal to its global budget
+stops nothing, and shares may add up to more than the global budget.
 
 Drop, don't churn: when the budgets refuse, a priority 1 or 2 job is deferred and sent
 back for retry; a priority 3 or 4 job is recorded as a `skipped` finding ("over
@@ -663,9 +673,10 @@ Allowed:
   retries of budget-deferred alarms) only
 - SNS: `Publish` on the `SLACK_TOPIC_ARN` topic only, when notifications are on
 - STS: `AssumeRole` on `arn:<partition>:iam::<account>:role/<MEMBER_ROLE_NAME>` in
-  every account (`*`) or in the allowed accounts only, when member accounts are on.
-  `sts:ExternalId` cannot be required of the caller by its own policy, so each member
-  role's trust policy requires it
+  the allowed accounts, or in any account (`*`) when none are listed, when member
+  accounts are on; with `organization_id` set, only where `aws:ResourceOrgID` is that
+  organization. `sts:ExternalId` cannot be required of the caller by its own policy, so
+  each member role's trust policy requires it when one is set
 - Standard Lambda logging
 
 Explicit deny (a backstop; nothing above grants them):
@@ -675,11 +686,13 @@ Explicit deny (a backstop; nothing above grants them):
 `ecs:DescribeTaskDefinition`, `states:DescribeExecution`,
 `states:GetExecutionHistory`, `kinesis:GetRecords`, `kinesis:GetShardIterator`,
 `iam:*`, `sts:GetFederationToken`, `sts:GetSessionToken`, and `sts:AssumeRole` on every
-role but the member roles (all roles when there are none).
+role but the member roles (all roles when there are none) and, with `organization_id`
+set, on every role whose `aws:ResourceOrgID` is not that organization (or absent).
 `ssm:GetParameter`, `ssm:GetParameters`, `ssm:GetParametersByPath` and
 `ssm:GetParameterHistory` are denied on every parameter but the catalog's. The reads
 `AIDevOpsAgentAccessPolicy` grants that return user data, code, command output,
-configuration contents, environment variables, arguments or credentials are denied
+configuration contents, environment variables, arguments, query results, sampled
+requests, traces or credentials are denied
 in their own statement (the list is in [terraform-contract.md](terraform-contract.md)),
 as is `apigateway:GET` on the API key paths. `sqs:ReceiveMessage` is denied in its
 own statement on every queue except the alarms and work queues, which the event
@@ -733,11 +746,16 @@ behaves as described everywhere else in this document. `accounts.py` implements 
   queue. Every member account deploys `terraform/member`: a rule on its default bus
   (state ALARM, the same name exclusions) that puts the events on the central bus
   through a role of its own, and a read-only role with the same managed policy, read
-  grants and deny list as the agent's role, trusting only the agent's role and
-  requiring the external id. A forwarded event keeps the member's `account`.
+  grants and deny list as the agent's role, trusting only the agent's role and, when
+  `external_id` is set, requiring it. A forwarded event keeps the member's `account`.
+  With `organization_id` set, the agent's role may assume member roles only in accounts
+  of that organization (`aws:ResourceOrgID`, granted and enforced by a deny); with
+  `allowed_account_ids` set, only in those accounts. Without either, it may assume
+  `MEMBER_ROLE_NAME` in any account.
 - **Settings.** `MEMBER_ROLE_NAME` (the member role's name; unset, no member account is
-  read), `MEMBER_EXTERNAL_ID`, `ALLOWED_ACCOUNT_IDS` (comma-separated; when set, every
-  other account is refused) and `DATADOG_ACCOUNT_TAG` (default `aws_account`), on both
+  read), `MEMBER_EXTERNAL_ID` (a secret setting; it reaches the functions as a
+  plaintext environment variable, like the Datadog and GitHub keys),
+  `ALLOWED_ACCOUNT_IDS` (comma-separated; when set, every other account is refused) and `DATADOG_ACCOUNT_TAG` (default `aws_account`), on both
   functions. The agent's own account comes from the function ARN in the Lambda
   context (from `sts:GetCallerIdentity` outside Lambda when member accounts are on).
 - **Account of a signal.** CloudWatch: the event's `account`, which must be an account
@@ -746,7 +764,8 @@ behaves as described everywhere else in this document. `accounts.py` implements 
   the agent's own account; a tag that is not an account id is refused. Triage drops,
   as a `skipped_account` decision with no finding, a signal with no trustworthy
   account, from an account outside `ALLOWED_ACCOUNT_IDS`, from another account while
-  `MEMBER_ROLE_NAME` is unset, or from a region other than the agent's.
+  `MEMBER_ROLE_NAME` is unset, from a region other than the agent's, or from a member
+  account whose role refuses to be assumed (see Sessions).
 - **Sessions.** Every read of an account goes through an `AccountSession`: its own
   boto3 session, built for one investigation job (or one triage invocation) and never
   shared. The agent's own account uses the agent's credentials. A member account's
@@ -759,7 +778,13 @@ behaves as described everywhere else in this document. `accounts.py` implements 
   member job whose role cannot be assumed, or that names a member account while
   `MEMBER_ROLE_NAME` is unset, stores an incomplete finding whose summary names the
   failure (`AccountAccessError: AssumeRole of <role ARN> failed (<code>)`); it never
-  runs on other credentials. In triage the failure fails the record, so SQS retries it.
+  runs on other credentials. In triage, a refusal that stands (`AccessDenied`, which
+  STS also returns for a role that does not exist, a malformed or oversized policy, a
+  region disabled for STS, any code but a transient one) drops the signal as a
+  `skipped_account` decision whose reason names the role and the code, with no finding
+  and no retry. Only a transient failure (throttling, STS unavailable or timing out, a
+  connection error) fails the record, so SQS retries it and, after 3 receives, sends it
+  to the DLQ.
 - **Scope.** Keys are scoped by account (see Resource keys), so repeats, cooldowns,
   links, claims, recall and remembered sources stay within an account. Each member
   account has its own signal rate and storm; incidents never mix accounts; with
@@ -806,7 +831,7 @@ are published to the notification topic; the others are stored only.
   without an investigation), `ttl` (epoch seconds), and:
   - `kind`: `alarm`, `incident`, `grouped`, `linked`, `deferred` or `skipped`
   - `resource_key`: the alarm's (or incident's) primary key, on every kind, scoped
-    `<account id>/<key>` for a member account
+    `<account id>|<key>` for a member account
   - `incident_id` (grouped), `linked_to` (linked), `linked_alarms` (list)
   - `recurrence_count` (default 0) and `last_seen_at`: later firings of the
     alarm while the finding is open or acknowledged, or within its cooldown

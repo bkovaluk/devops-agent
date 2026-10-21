@@ -278,7 +278,7 @@ Both Lambdas read the shared settings; the triage Lambda also reads the triage s
 | `GH_APP_PRIVATE_KEY` | unset | the App's PEM private key |
 | `GH_ORG` | unset | the only GitHub org the tools read; the GitHub tools are offered only when this and the three App settings are set |
 | `MEMBER_ROLE_NAME` | unset | name of the read-only role in every member account; unset, the agent reads only its own account and refuses signals from others (see [Many accounts](#many-accounts)) |
-| `MEMBER_EXTERNAL_ID` | unset | external id sent when assuming a member role; the member roles' trust policies require it |
+| `MEMBER_EXTERNAL_ID` | unset | external id sent when assuming a member role; set it, and the member roles' trust policies require it |
 | `ALLOWED_ACCOUNT_IDS` | unset | comma-separated account ids; when set, signals from any other account are refused (list the agent's own account to investigate it) |
 | `DATADOG_ACCOUNT_TAG` | `aws_account` | the Datadog monitor tag whose value names the AWS account the monitor watches; a monitor without it is the agent's own account |
 
@@ -301,6 +301,7 @@ Triage only:
 | `MAX_DEFERRED_RETRIES` | `8` | times one deferred alarm is retried (15 minutes apart) |
 | `ACCOUNT_HOURLY_BUDGET` | `5` | with `MEMBER_ROLE_NAME` set, investigations one account may use per UTC hour, within `HOURLY_BUDGET` |
 | `ACCOUNT_DAILY_BUDGET` | `25` | with `MEMBER_ROLE_NAME` set, investigations one account may use per UTC day, within `DAILY_BUDGET` |
+| `ACCOUNT_P1_DAILY_OVERFLOW` | `5` | with `MEMBER_ROLE_NAME` set, priority 1 jobs one account may run past the hourly budget per UTC day, within `P1_DAILY_OVERFLOW` |
 
 Signal priority is 1 for critical down to 4 for low (a CloudWatch alarm's from its
 severity floor, a Datadog signal's from its monitor). When the budgets refuse, a
@@ -313,9 +314,9 @@ dimensions `env`, `source` (`cloudwatch` or `datadog`) and `decision` (`investig
 `storm_grouped`, `opted_out` or `skipped_account`), plus `account` when
 `MEMBER_ROLE_NAME` is set, once per signal. Its log line names the signal's account.
 
-Secrets (`DD_API_KEY`, `DATADOG_APP_KEY`, `GH_APP_PRIVATE_KEY`) are read from the
-environment, so the role needs no secret reads. Inject them at deploy time from your
-secret store.
+Secrets (`DD_API_KEY`, `DATADOG_APP_KEY`, `GH_APP_PRIVATE_KEY`, `MEMBER_EXTERNAL_ID`) are
+read from the environment, so the role needs no secret reads. Inject them at deploy time
+from your secret store; they sit in the functions' configuration in plaintext.
 
 ## Notifications
 
@@ -342,20 +343,23 @@ In short:
 - `bedrock:InvokeModel` on the configured models and the module's inference profiles;
 - writes only on the agent's own resources: the findings table, the two queues, the
   log groups and, when notifications are on, `sns:Publish` on the topic;
-- with `member_role_name` set, `sts:AssumeRole` on that role in every account of the
-  organization, or in `allowed_account_ids` only;
+- with `member_role_name` set, `sts:AssumeRole` on that role in the `allowed_account_ids`,
+  or in any account when that list is empty; with `organization_id` set too, only in
+  accounts of that organization;
 - an explicit deny that wins over all of the above: secret and parameter values, S3
   object bodies, Lambda configuration (it returns the Datadog and GitHub keys in
   plaintext), task definitions, Step Functions inputs and history, stream records,
-  `iam:*`, STS (AssumeRole of any role but the member roles), every read in the managed
-  policy that returns user data, code, command output, configuration contents or
-  credentials, API key values, and every queue but the agent's own. `aws_guard.py`
+  `iam:*`, STS (AssumeRole of any role but the member roles, and with
+  `organization_id` of any role outside the organization), every read in the managed
+  policy that returns user data, code, command output, configuration contents, query
+  results, sampled requests, traces or credentials, API key values, and every queue but
+  the agent's own. `aws_guard.py`
   refuses the same operations before they reach AWS.
 
 Each member account's read-only role, created by `terraform/member`, carries the same
 managed policy, read grants and deny list (one shared definition in
 `terraform/modules/shared`), with no queue and no parameter readable, and trusts only
-the agent's role, with the external id.
+the agent's role, requiring the external id when one is set.
 
 The Lambdas need no VPC: every call is a public AWS, Datadog or GitHub API.
 
@@ -394,16 +398,20 @@ To enable it:
 
 1. **In the tooling account**, set the agent module's `organization_id` (it creates a
    central event bus that accepts `events:PutEvents` only from your organization, with
-   a rule that sends the same alarm events to the alarms queue), `member_role_name`
-   (for example `devops-agent-read`), `member_external_id`, and optionally
-   `allowed_account_ids` (the accounts it may investigate, the tooling account among
-   them when its own alarms count; empty means every account of the organization).
+   a rule that sends the same alarm events to the alarms queue, and lets the agent's
+   role assume member roles only in accounts of the organization), `member_role_name`
+   (for example `devops-agent-read`), `member_external_id` (recommended: the member
+   roles then require it), and `allowed_account_ids` (recommended: the accounts it may
+   investigate and assume a role in, the tooling account among them when its own alarms
+   count). With `allowed_account_ids` empty, triage refuses no signal by its account and
+   the role may assume `member_role_name` in any account of the organization; without
+   `organization_id` either, in any account at all.
 2. **In every member account**, deploy `terraform/member` with `investigator_role_arn`
    and `central_event_bus_arn` from the agent module's `role_arn` and
    `central_event_bus_arn` outputs, `role_name` equal to `member_role_name`, and the
    same `external_id`. It creates the read-only role, with the same managed policy,
    read grants and deny list as the agent's own role and trusting only the agent's
-   role with that external id, and a default-bus rule that forwards alarms entering
+   role (with that external id, when set), and a default-bus rule that forwards alarms entering
    ALARM (with the same name exclusions) to the central bus as a role of its own.
 
 [`terraform/examples/multi-account`](terraform/examples/multi-account) deploys the
@@ -426,16 +434,25 @@ How the agent then works across accounts:
   `devops-agent-<finding id>`, as long as the invocation can still run) and builds
   every client its tools and context bundle use from that session. Bedrock, the
   queues, the findings table and the topic stay on the agent's own role. An
-  AssumeRole that fails ends the job as an incomplete finding naming it.
-- **Keys by account.** A member account's resource keys are `<account id>/<key>`, so
+  AssumeRole that fails ends the job as an incomplete finding naming it. In triage, a
+  member role that refuses to be assumed (access denied, a missing role, a disabled
+  region) drops the signal as a `skipped_account` decision naming the AWS error code;
+  only a throttled or unreachable STS call is retried.
+- **Keys by account.** A member account's resource keys are `<account id>|<key>`, so
   repeats, cooldowns, links, claims, remembered sources and reviewed prior findings
   never cross accounts; the agent's own account keeps its keys unchanged. Every
   finding records its `account_id` and `region`.
 - **Budgets per account.** Each account may use `ACCOUNT_HOURLY_BUDGET` (5) of the
-  hourly and `ACCOUNT_DAILY_BUDGET` (25) of the daily investigations, within the
-  global budgets, so one noisy account cannot spend the others'. Each member account
-  has its own signal rate and storm, and an incident never mixes accounts. Decision
-  metrics carry an `account` dimension.
+  hourly and `ACCOUNT_DAILY_BUDGET` (25) of the daily investigations, and
+  `ACCOUNT_P1_DAILY_OVERFLOW` (5) of the priority 1 overflow, within the global
+  budgets, so one noisy account, even one that tags every alarm critical, cannot spend
+  the others'. Size each account share below its global budget, about the global
+  budget divided by the number of accounts you expect to be noisy at once: at half (the
+  defaults), two accounts can spend a whole budget and a third still waits; at the
+  global value, a share stops nothing. The shares may add up to more than the global
+  budget, which still caps the total. Each member account has its own signal rate and
+  storm, and an incident never mixes accounts. Decision metrics carry an `account`
+  dimension.
 
 ### Build
 

@@ -104,7 +104,7 @@ def draw(t: dict[str, str]) -> str:
         text(
             32,
             height - 18,
-            "Each member role trusts only the agent's role, with the external id, and carries "
+            "Each member role trusts only the agent's role (with the external id, when set) and carries "
             "the same deny list. Every finding records the account it read. Optional SNS notify "
             "stays central.",
             t,

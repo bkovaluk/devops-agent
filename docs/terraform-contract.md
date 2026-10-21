@@ -28,9 +28,9 @@ is `${environment}`.
 | `github_app_id`, `github_app_installation_id`, `github_app_private_key` | `null` (private key sensitive) | `GH_APP_ID`, `GH_APP_INSTALLATION_ID`, `GH_APP_PRIVATE_KEY` |
 | `github_org` | `null` | `GH_ORG` |
 | `member_role_name` | `null` | `MEMBER_ROLE_NAME` on both functions and the `sts:AssumeRole` grant |
-| `member_external_id` | `null` | `MEMBER_EXTERNAL_ID` on both functions |
-| `allowed_account_ids` | `[]` | `ALLOWED_ACCOUNT_IDS` on both functions, and the accounts the `sts:AssumeRole` grant names (every account when empty) |
-| `organization_id` | `null` | the central event bus, its organization-only policy and its rule |
+| `member_external_id` | `null` (sensitive) | `MEMBER_EXTERNAL_ID` on both functions |
+| `allowed_account_ids` | `[]` | `ALLOWED_ACCOUNT_IDS` on both functions, and the accounts the `sts:AssumeRole` grant names (any account when empty) |
+| `organization_id` | `null` | the central event bus, its organization-only policy and its rule; with `member_role_name`, the organization boundary on `sts:AssumeRole` |
 | `account_hourly_budget`, `account_daily_budget` | `null` | `ACCOUNT_HOURLY_BUDGET`, `ACCOUNT_DAILY_BUDGET` on triage |
 | `extra_environment` | `{}` | any other variable in the tables below (budgets, throttles, steps, log level) |
 | `alarm_actions` | `[]` | the queue and token alarms, and the budget's notifications (its SNS topics) |
@@ -104,6 +104,7 @@ functions `DATADOG_ACCOUNT_TAG`. `AWS_REGION` is set by Lambda.
 | `MAX_DEFERRED_RETRIES` | optional, default 8 |
 | `ACCOUNT_HOURLY_BUDGET` | optional, default 5; applies with `MEMBER_ROLE_NAME` set |
 | `ACCOUNT_DAILY_BUDGET` | optional, default 25; applies with `MEMBER_ROLE_NAME` set |
+| `ACCOUNT_P1_DAILY_OVERFLOW` | optional, default 5; applies with `MEMBER_ROLE_NAME` set |
 
 ## SQS queues
 
@@ -157,11 +158,11 @@ table by `pk` prefix: `finding#<id>` (findings), `snap#<id>` (eval snapshots),
 `active#<resource_key>` (running-job claims, `active.py`), `budget#<YYYY-MM-DDTHH>`,
 `budget#<YYYY-MM-DD>`, `budget#tokens#day#<YYYY-MM-DD>`, `budget#datadog#<YYYY-MM-DDTHH>`,
 `budget#p1#day#<YYYY-MM-DD>` and, with member accounts,
-`budget#account#<account>#<YYYY-MM-DDTHH>` and `budget#account#<account>#<YYYY-MM-DD>`
-(budget counters, `gate.py`), `rate#<YYYY-MM-DDTHH:MM>` and
+`budget#account#<account>#<YYYY-MM-DDTHH>`, `budget#account#<account>#<YYYY-MM-DD>` and
+`budget#account#<account>#p1#day#<YYYY-MM-DD>` (budget counters, `gate.py`), `rate#<YYYY-MM-DDTHH:MM>` and
 `rate#<account>#<YYYY-MM-DDTHH:MM>` (the signal rate), `storm#active` and
 `storm#active#<account>` (the open storm) and `obs#<resource_key>` (sources that
-returned data). A member account's `resource_key` is `<account id>/<key>`; the agent's
+returned data). A member account's `resource_key` is `<account id>|<key>`; the agent's
 own account's keys carry no account. Only `finding#` items carry `resource_key` and
 `status`, so only findings appear in the indexes.
 
@@ -307,9 +308,11 @@ These cover every boto3 operation in `READ_ONLY_OPERATIONS` in
 
 Only with `member_role_name` set, in its own policy `member-roles`: `sts:AssumeRole` on
 `arn:aws:iam::<account>:role/<member_role_name>` for each of `allowed_account_ids`, or
-`arn:aws:iam::*:role/<member_role_name>` when that list is empty. No `sts:ExternalId`
-condition: a caller's own policy cannot require it, so each member role's trust policy
-does.
+`arn:aws:iam::*:role/<member_role_name>` when that list is empty. With `organization_id`
+set, the statement has the condition `StringEquals` `aws:ResourceOrgID` =
+`organization_id`, so the role's account must belong to the organization either way.
+No `sts:ExternalId` condition: a caller's own policy cannot require it, so each member
+role's trust policy does when `external_id` is set.
 
 ### Explicit deny
 
@@ -336,15 +339,19 @@ sts:GetSessionToken
 ```
 
 `sts:AssumeRole` with `NotResource` set to the member role ARNs above, or on `*` when
-there are none: the only roles the role may assume are the member roles.
+there are none: the only roles the role may assume are the member roles. With
+`member_role_name` and `organization_id` set, also `sts:AssumeRole` on `*` with
+`StringNotEquals` `aws:ResourceOrgID` = `organization_id`: a role in an account outside
+the organization, or in no organization (the key is then absent), is denied.
 
 `ssm:GetParameter`, `ssm:GetParameters`, `ssm:GetParametersByPath` and
 `ssm:GetParameterHistory` with `NotResource` set to the catalog parameter's ARN (on `*`
 without one): parameters can hold credentials.
 
-The reads `AIDevOpsAgentAccessPolicy` grants that return user data, code, command
-output, configuration contents, environment variables, arguments or credentials, and
-its one write, resource `*`:
+The reads `AIDevOpsAgentAccessPolicy` grants, or a later version of it could, that
+return user data, code, command output, configuration contents, environment variables,
+arguments, query results, sampled requests, traces or credentials, and its one write,
+resource `*`:
 
 ```
 ec2:DescribeInstanceAttribute
@@ -380,6 +387,25 @@ sagemaker:DescribePipeline
 sagemaker:DescribePipelineDefinitionForExecution
 sagemaker:DescribeOptimizationJob
 mq:DescribeConfigurationRevision
+xray:BatchGetTraces
+wafv2:GetSampledRequests
+waf:GetSampledRequests
+waf-regional:GetSampledRequests
+appsync:GetGraphqlApiEnvironmentVariables
+codecommit:GetDifferences
+codecommit:GetCommit
+codecommit:GetBlob
+codecommit:GetFile
+codecommit:GetFolder
+codecommit:BatchGet*
+iot:GetThingShadow
+athena:GetNamedQuery
+athena:BatchGetNamedQuery
+athena:GetPreparedStatement
+athena:GetQueryResults
+imagebuilder:GetComponent
+ses:GetTemplate
+ses:GetEmailTemplate
 eks:AccessKubernetesApi
 support:CreateCase
 ```
@@ -403,7 +429,7 @@ the agent module's `role_arn` as `investigator_role_arn` and its
 | `investigator_role_arn` | required | the only principal the read-only role trusts |
 | `central_event_bus_arn` | required | the forwarding rule's target and its role's grant |
 | `role_name` | `devops-agent-read` | the read-only role; the agent's `member_role_name` |
-| `external_id` | `null` | the `sts:ExternalId` the trust policy requires; the agent's `member_external_id` |
+| `external_id` | `null` (sensitive) | the `sts:ExternalId` the trust policy requires; the agent's `member_external_id`. Set it |
 | `name_prefix` | `devops-agent` | the rule and its role, and an excluded alarm name prefix; the agent's `name_prefix` |
 | `catalog_json` | `null` | the excluded alarm name prefixes, when the agent's catalog sets its own |
 | `tags` | `{}` | all resources |

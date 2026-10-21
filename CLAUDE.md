@@ -27,7 +27,7 @@ Guidance for coding agents and contributors working in this repo.
   `handler.tool_context`, never as a module-level or cached client, or a warm Lambda
   could read one account with another's credentials. Only Bedrock, SNS, STS and the
   findings table are built once, on the agent's own role.
-- A member account's resource keys are `<account id>/<key>`; anything stored by
+- A member account's resource keys are `<account id>|<key>`; anything stored by
   resource uses the job's or candidate's keys as they are, and anything that parses a
   key reads `local_key`.
 - After changing the deployment shape, update `docs/diagram/architecture.py` (and
