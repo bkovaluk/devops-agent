@@ -10,8 +10,8 @@ from diagram import boundary, edge, head, text, tile, write_both
 
 ROW = 190  # the central pipeline
 MEMBER_Y = 610  # tiles inside each member account
-BUS_LANE = 466  # member buses up to the central bus
-ROLE_LANE = 450  # STS down to each member's read-only role
+BUS_LANE = 474  # member buses up to the central bus
+ROLE_LANE = 436  # STS down to each member's read-only role
 MEMBERS = (("dev", 24), ("staging", 484), ("prod", 944))
 
 
@@ -38,13 +38,15 @@ def draw(t: dict[str, str]) -> str:
         t,
         "devops-agent, multi-account",
         "One tooling account runs the agent for every account. Members forward alarms and "
-        "lend a read-only role; nothing in a member account can write back.",
+        "lend a read-only role; the agent never writes into a member account.",
     )
-    p.append(boundary(24, 100, 1128, 330, "TOOLING ACCOUNT  ·  runs the agent", "acct", t))
-    p.append(boundary(1176, 100, 200, 330, "OUTBOUND, READ ONLY", "dim", t, dashed=True))
+    p.append(
+        boundary(24, 100, 1128, 316, "TOOLING ACCOUNT  ·  runs the agent  ·  one region", "acct", t)
+    )
+    p.append(boundary(1176, 100, 200, 316, "OUTBOUND, READ ONLY", "dim", t, dashed=True))
 
     p.append(
-        tile(110, ROW, "eventbridge", "integration", "Central event bus", "org-only policy", t)
+        tile(110, ROW, "eventbridge", "integration", "Central event bus", "org policy · rule", t)
     )
     p.append(tile(250, ROW, "sqs", "integration", "Alarms queue", "DLQ · backlog alarm", t))
     p.append(edge([(138, ROW), (222, ROW)], t))
@@ -59,7 +61,7 @@ def draw(t: dict[str, str]) -> str:
     p.append(edge([(390, ROW + 68), (390, 350), (502, 350)], t, "claims", 398, 300, anchor="start"))
     p.append(edge([(652, ROW + 14), (610, ROW + 14), (610, 330), (558, 330)], t))
 
-    p.append(tile(680, 330, "iam", "security", "STS AssumeRole", "per job, 15 min", t))
+    p.append(tile(680, 330, "iam", "security", "STS AssumeRole", "short session per job", t))
     p.append(edge([(680, ROW + 68), (680, 302)], t))
 
     p.append(tile(860, 330, "bedrock", "ml", "Amazon Bedrock", "own profiles", t))
@@ -84,7 +86,7 @@ def draw(t: dict[str, str]) -> str:
             anchor="start",
         )
     )
-    p.append(text(690, 422, "assume role, read only", t, size=11, fill="dim", anchor="start"))
+    p.append(text(690, 429, "assume role, read only", t, size=11, fill="dim", anchor="start"))
 
     p.append(
         text(

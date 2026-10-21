@@ -16,27 +16,30 @@ C = CARD_W / 2
 
 
 def triage(t: dict[str, str]) -> str:
-    width, height, lane = 1400, 470, 210
+    width, height, lane = 1400, 500, 210
     p = head(
         width,
         height,
         t,
         "Triage",
-        "Decides, without a model, which signals earn an investigation. Every signal still gets a finding.",
+        "Decides, without a model, which signals earn an investigation. Every decision is recorded.",
     )
     p.append(tile(70, lane, "sqs", "integration", "Alarms queue", "", t))
     p.append(card(205, lane, "Parse", "signals, deduped", t))
     p.append(card(345, lane, "Settle", "keys and severity", t))
     p.append(edge([(70 + T, lane), (205 - C, lane)], t))
     p.append(edge([(205 + C, lane), (345 - C, lane)], t))
+    p.append(edge([(345, lane + 29), (345, 327)], t))
+    p.append(exit_pill(345, 340, "dropped", t))
+    p.append(text(345, 368, "unverified or stale", t, size=10.5, fill="dim"))
 
     p.append(boundary(420, 120, 690, 290, "GATES  ·  no model", "region", t, dashed=True))
     gates = [
         ("Opted out?", "skipped"),
-        ("Already open?", "repeat"),
+        ("Open or cooling down?", "repeat"),
         ("Shares a key?", "linked"),
         ("Part of a storm?", "grouped"),
-        ("Over budget?", "deferred"),
+        ("Over budget?", "deferred or skipped"),
     ]
     xs = [480 + i * 130 for i in range(len(gates))]
     p.append(edge([(345 + C, lane), (xs[0] - R, lane)], t))
@@ -46,7 +49,7 @@ def triage(t: dict[str, str]) -> str:
         p.append(exit_pill(x, 340, leaves, t))
         if i + 1 < len(xs):
             p.append(edge([(x + R, lane), (xs[i + 1] - R, lane)], t))
-    p.append(text(765, 390, "each exit records a finding", t, size=11, fill="dim"))
+    p.append(text(765, 390, "each exit is recorded on a finding", t, size=11, fill="dim"))
 
     p.append(card(1190, lane, "Emit", "claim keys, send", t))
     p.append(tile(1325, lane, "sqs", "integration", "Work queue", "", t))
@@ -57,8 +60,8 @@ def triage(t: dict[str, str]) -> str:
         text(
             32,
             height - 18,
-            "Right: the signal moves on. Down: it leaves at that gate. Batch size, cooldowns, "
-            "storm rate and budgets are settings, not shown here.",
+            "Right: the signal moves on. Down: it leaves there. A storm's head and urgent signals go on; "
+            "the rest are grouped. Deferred signals return to the alarms queue while still in ALARM.",
             t,
             size=11.5,
             fill="dim",
@@ -70,7 +73,7 @@ def triage(t: dict[str, str]) -> str:
 
 
 def investigator(t: dict[str, str]) -> str:
-    width, height, lane = 1400, 410, 220
+    width, height, lane = 1400, 430, 220
     p = head(
         width,
         height,
@@ -103,9 +106,9 @@ def investigator(t: dict[str, str]) -> str:
 
     p.append(card(870, lane, "Redact", "credentials removed", t))
     p.append(tile(1005, lane, "dynamodb", "database", "Store", "findings table", t))
-    p.append(card(1135, lane, "Notify", "optional", t, dashed=True))
-    p.append(card(1270, lane, "Remember", "what returned data", t))
-    p.append(edge([(745 + R, lane), (870 - C, lane)], t, "yes", 787, lane - 8))
+    p.append(card(1135, lane, "Remember", "when reported", t))
+    p.append(card(1270, lane, "Notify", "optional", t, dashed=True))
+    p.append(edge([(745 + R, lane), (870 - C, lane)], t, "done", 790, lane - 8))
     p.append(edge([(870 + C, lane), (1005 - T, lane)], t))
     p.append(edge([(1005 + T, lane), (1135 - C, lane)], t))
     p.append(edge([(1135 + C, lane), (1270 - C, lane)], t))
@@ -114,8 +117,8 @@ def investigator(t: dict[str, str]) -> str:
         text(
             32,
             height - 18,
-            "The loop runs until the model reports. At its step, token or time limit it is told to "
-            "report from the evidence it has; a fallback model covers outages.",
+            "The loop runs until the model reports or gives up; a run without a report is still stored, "
+            "as incomplete. Limits make the model report from what it has; a fallback model covers outages.",
             t,
             size=11.5,
             fill="dim",

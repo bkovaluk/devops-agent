@@ -59,12 +59,12 @@ storms and repeats from turning into many expensive runs. The investigator runs 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/triage-flow-dark.svg">
-  <img alt="Triage flow, left to right: signals from the alarms queue are parsed and settled, then pass five gates that run without a model: opted out, already open, shares a key with other work, part of a storm, over budget. A signal that stops at a gate leaves with a finding (skipped, repeat, linked, grouped or deferred); the rest are emitted to the work queue." src="docs/triage-flow-light.svg">
+  <img alt="Triage flow, left to right: signals from the alarms queue are parsed and settled; a Datadog signal its monitor does not confirm, or a deferred alarm no longer in ALARM, is dropped there. The rest pass five gates that run without a model: opted out, open or cooling down, shares a key with other work, part of a storm, over budget. A signal that stops at a gate is recorded on a finding (skipped, counted as a repeat, linked, grouped, or deferred and retried later); the rest are emitted to the work queue." src="docs/triage-flow-light.svg">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/investigator-flow-dark.svg">
-  <img alt="Investigator flow, left to right: a job from the work queue recalls past reviewed findings and runs a code-only precheck, then enters the model loop: reason, read with read-only tools, and repeat until the model reports. The finding is redacted, stored, optionally notified, and the tool calls that returned data are remembered." src="docs/investigator-flow-light.svg">
+  <img alt="Investigator flow, left to right: a job from the work queue recalls past reviewed findings and runs a code-only precheck, then enters the model loop: reason, read with read-only tools, and repeat until the model reports or gives up. The finding, or an incomplete one, is redacted and stored; when the model reported, the tool calls that returned data are remembered; critical and high findings are optionally notified." src="docs/investigator-flow-light.svg">
 </picture>
 The full design is in [docs/architecture.md](docs/architecture.md).
 
@@ -363,13 +363,20 @@ What it takes:
 - **Central event bus** in the tooling account, with a resource policy that accepts
   events only from your organization (`aws:PrincipalOrgID`).
 - **A rule in every member account** on the default bus, matching
-  `CloudWatch Alarm State Change` with state `ALARM`, targeting the central bus.
+  `CloudWatch Alarm State Change` with state `ALARM` and the same name exclusions the
+  module's own rule applies, targeting the central bus. A rule that targets a bus in
+  another account needs a role it assumes to put events there.
+- **A rule on the central bus** that sends those events to the alarms queue.
 - **A read-only role in every member account** with the same policy and deny list as
   the single-account execution role, trusting only the investigator's role (plus an
   external ID).
 - **The investigator assumes that role per job**, chosen by the account id in the alarm
-  event, for 15 minutes, and builds its AWS clients from those credentials. Bedrock,
-  the queues and the findings table stay in the tooling account.
+  event, for the length of one job, and builds its AWS clients from those credentials.
+  Bedrock, the queues and the findings table stay in the tooling account.
+- **One region.** Cross-account rules and the investigator's clients work within one
+  region; resources in other regions are not read.
+- **Datadog signals carry no account id.** Route them with a monitor tag that names the
+  account, or let them read only the tooling account.
 - **Findings record the account** they read, and budgets and cooldowns are kept per
   account so one noisy account cannot spend the others' budget.
 
@@ -486,6 +493,10 @@ uv run ruff format --check .
 uv run mypy devops_agent evals
 uv run pytest -q
 ```
+
+The same commands are recipes in the `justfile` (`just lint`, `just test`, `just build`).
+Install [just](https://github.com/casey/just) with `uv tool install rust-just` or your
+package manager, or run the commands above directly.
 
 `just diagram` re-renders `docs/architecture-*.svg` and `docs/multi-account-*.svg`
 from `docs/diagram/architecture.py`, `docs/diagram/multi_account.py` and
