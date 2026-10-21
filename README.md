@@ -336,6 +336,33 @@ resource list it implements is in [docs/terraform-contract.md](docs/terraform-co
 The module's inputs, outputs and secret handling are in
 [terraform/README.md](terraform/README.md).
 
+### Many accounts
+
+The module deploys the agent into one account and investigates that account. For an AWS
+Organization with several workload accounts, the pattern below runs one agent from a
+central tooling account instead. It is a reference design: the module and the agent do
+not implement it yet.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/multi-account-dark.svg">
+  <img alt="Multi-account layout: in each member account, CloudWatch alarms go to the default event bus, where a rule forwards ALARM state changes to a central event bus in the tooling account. The tooling account runs the alarms queue, triage, work queue and investigator. For each job the investigator calls STS to assume a read-only role in the member account the alarm came from; it also calls Amazon Bedrock and optionally Datadog and GitHub, and writes findings, keyed by account, to its own table." src="docs/multi-account-light.svg">
+</picture>
+
+What it takes:
+
+- **Central event bus** in the tooling account, with a resource policy that accepts
+  events only from your organization (`aws:PrincipalOrgID`).
+- **A rule in every member account** on the default bus, matching
+  `CloudWatch Alarm State Change` with state `ALARM`, targeting the central bus.
+- **A read-only role in every member account** with the same policy and deny list as
+  the single-account execution role, trusting only the investigator's role (plus an
+  external ID).
+- **The investigator assumes that role per job**, chosen by the account id in the alarm
+  event, for 15 minutes, and builds its AWS clients from those credentials. Bedrock,
+  the queues and the findings table stay in the tooling account.
+- **Findings record the account** they read, and budgets and cooldowns are kept per
+  account so one noisy account cannot spend the others' budget.
+
 ### Build
 
 ```bash
