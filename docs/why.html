@@ -7,7 +7,7 @@
 <style>
 :root {
   --bg: #f7f8fb; --panel: #ffffff; --sunk: #eef0f5; --fg: #111524; --muted: #5b6478;
-  --faint: #8a94a8; --line: #dde1ea; --accent: #b7791f; --accent-soft: #f7ebd2;
+  --faint: #8a94a8; --line: #dde1ea; --accent: #8f5d0d; --accent-soft: #f7ebd2;
   --hot: #c2410c; --sans: "Mona Sans", ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
   --mono: "Martian Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -53,11 +53,9 @@ h2 { font-size: 58px; line-height: 1.04; max-width: 1300px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; display: flex; flex-direction: column; gap: 10px; position: relative; }
 .tile b { font-size: 21px; font-weight: 650; }
 .tile code { font-family: var(--mono); font-size: 13.5px; line-height: 1.5; color: var(--muted); }
-.tile.reads { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.tile.reads::after { content: "reads today"; position: absolute; top: 18px; right: 18px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
 .footnote { font-size: 20px; color: var(--muted); margin: 0; }
 
-/* noise */
+/* triage numbers */
 .big { display: flex; gap: 72px; align-items: baseline; }
 .big div { display: flex; flex-direction: column; gap: 6px; }
 .big strong { font-size: 120px; font-weight: 780; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
@@ -71,7 +69,7 @@ h2 { font-size: 58px; line-height: 1.04; max-width: 1300px; }
 .bar i.real, .legend i.real { background: var(--accent); opacity: 1; }
 .legend { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; font-size: 18px; line-height: 1.4; color: var(--muted); }
 .legend div { display: grid; grid-template-columns: 14px 1fr; column-gap: 12px; align-content: start; }
-#noise, #zero, #idea, #finding, #safety { justify-content: center; }
+#triage, #idea, #finding, #safety { justify-content: center; }
 .legend i { width: 14px; height: 14px; border-radius: 3px; margin-top: 4px; grid-row: span 2; }
 .legend div:last-child, .legend div:last-child b { color: var(--accent); }
 .legend b { display: block; color: var(--fg); font-family: var(--mono); font-size: 18px; font-weight: 600; margin-bottom: 4px; }
@@ -144,8 +142,8 @@ ul.ev li span { font-family: var(--mono); font-size: 12px; color: var(--accent);
 .loop svg { width: 100%; height: auto; max-height: 560px; }
 .loop svg text { font-family: var(--sans); fill: var(--fg); }
 .res { display: flex; flex-direction: column; gap: 18px; }
-.res div { display: grid; grid-template-columns: 210px 1fr; gap: 20px; align-items: baseline; border-top: 1px solid var(--line); padding-top: 16px; }
-.res code { font-family: var(--mono); font-size: 17px; color: var(--accent); }
+.res div { display: grid; grid-template-columns: 120px 1fr; gap: 20px; align-items: baseline; border-top: 1px solid var(--line); padding-top: 16px; }
+.res b { font-size: 24px; font-weight: 700; color: var(--accent); }
 .res p { margin: 0; font-size: 19px; line-height: 1.45; color: var(--muted); }
 
 /* start */
@@ -171,103 +169,41 @@ ul.ev li span { font-family: var(--mono); font-size: 12px; color: var(--accent);
 
 <section class="slide title" id="title">
   <div class="kicker">devops-agent</div>
-  <h1>Every alarm deserves a first look. <em>Nobody has time to give it one.</em></h1>
-  <p class="lede">A read-only investigator that reads the alarm, its metrics, its logs and what changed, then writes down what it found. It takes about three minutes, and it never touches anything.</p>
-  <div class="meta"><span>Press → to begin</span><span>Amazon Bedrock · Lambda · EventBridge · DynamoDB</span></div>
-</section>
-
-<section class="slide" id="sources">
-  <div class="kicker">The setup</div>
-  <h2>Count the things that can page you.</h2>
-  <div class="tiles">
-    <div class="tile reads"><b>CloudWatch alarms</b><code>checkout-api-errors-prod<br>Errors ≥ 1 for 1 datapoint</code></div>
-    <div class="tile reads"><b>Datadog monitors</b><code>[Warn] p99 latency &gt; 2s<br>service:web-store env:prod</code></div>
-    <div class="tile"><b>Amazon Inspector</b><code>CVE in base image · HIGH<br>found in 14 container images</code></div>
-    <div class="tile"><b>GuardDuty</b><code>Recon:EC2/PortProbeUnprotectedPort<br>severity 5.0</code></div>
-    <div class="tile"><b>Security Hub</b><code>S3.8 Block Public Access<br>should be enabled · FAILED</code></div>
-    <div class="tile"><b>AWS Health</b><code>Scheduled maintenance · RDS<br>3 instances · next Tuesday</code></div>
-    <div class="tile"><b>Cost Anomaly Detection</b><code>+$412 per day<br>in one service since Thursday</code></div>
-    <div class="tile"><b>Synthetics canaries</b><code>login-flow failed<br>3 of 3 runs · us-east-1</code></div>
-    <div class="tile"><b>AWS Config</b><code>required-tags NON_COMPLIANT<br>61 resources</code></div>
-  </div>
-  <p class="footnote">Nine consoles, nine formats, one person on call. The agent starts with the two that wake people up.</p>
-</section>
-
-<section class="slide" id="noise">
-  <div class="kicker">One production account · 30 days</div>
-  <h2>Most of it is noise. Some of it is not.</h2>
-  <div class="big">
-    <div><strong>2,446</strong><span>times an alarm went into ALARM</span></div>
-    <div><strong>24</strong><span>alarms did all of that</span></div>
-    <div class="real"><strong>34</strong><span>needed a person, about 1 in 70</span></div>
-  </div>
-  <div class="bar" aria-hidden="true"><i style="flex:1230"></i><i style="flex:1062"></i><i style="flex:120"></i><i class="real" style="flex:34;min-width:10px"></i></div>
-  <div class="legend">
-    <div><i></i><b>1,230</b>Target tracking scaling alarms: machines talking to machines</div>
-    <div><i></i><b>1,062</b>One p99 latency alarm on 1 of 1 datapoint, flapping all month</div>
-    <div><i></i><b>120</b>Another alarm on 1 of 1 datapoint</div>
-    <div><i class="real"></i><b>34</b>Real problems a person had to look at</div>
-  </div>
+  <h1>Every page should start with <em>a finding, not a search.</em></h1>
+  <p class="lede">A read-only agent investigates each alarm that matters and writes down what it found, within minutes. It reads what you would read and changes nothing.</p>
+  <div class="meta"><span>Use the arrow keys or swipe</span></div>
 </section>
 
 <section class="slide" id="manual">
-  <div class="kicker">What a person does with one of the 34</div>
+  <div class="kicker">The problem · an example</div>
   <h2>Thirty-nine minutes of reading, then a guess in a chat thread.</h2>
   <div class="timeline">
     <div class="step first"><time>13:02</time><div class="dot"></div><p>Paged<small>checkout-api-errors-prod</small></p></div>
     <div class="step"><time>13:06</time><div class="dot"></div><p>Open the alarm<small>1 datapoint. Is it real?</small></p></div>
     <div class="step"><time>13:09</time><div class="dot"></div><p>Graph the metric<small>against last Tuesday</small></p></div>
     <div class="step"><time>13:14</time><div class="dot"></div><p>Find the log group<small>which one holds this?</small></p></div>
-    <div class="step"><time>13:19</time><div class="dot"></div><p>Logs Insights<small>KeyError: 'currency'</small></p></div>
-    <div class="step"><time>13:26</time><div class="dot"></div><p>CloudTrail<small>deploy at 12:58</small></p></div>
+    <div class="step"><time>13:19</time><div class="dot"></div><p>Query the logs<small>KeyError: 'currency'</small></p></div>
+    <div class="step"><time>13:26</time><div class="dot"></div><p>What changed?<small>deploy at 12:58</small></p></div>
     <div class="step"><time>13:31</time><div class="dot"></div><p>Other alarms?<small>same function</small></p></div>
     <div class="step"><time>13:38</time><div class="dot"></div><p>Read the code<small>pricing.py line 91</small></p></div>
     <div class="step last"><time>13:41</time><div class="dot"></div><p>“Roll back to 213?”<small>posted in chat</small></p></div>
   </div>
-  <div class="tally"><strong>39 min</strong><p>Every step is a read. None of it needed judgement until the last one, and none of it was written down anywhere the next person will find.</p></div>
-</section>
-
-<section class="slide" id="zero">
-  <div class="kicker">And the next time</div>
-  <h2>We start from zero, every time.</h2>
-  <div class="cards">
-    <div class="card"><div class="n">01</div><h3>The context evaporates</h3><p>What was checked, what was ruled out and why lives in one person's head and a chat thread that scrolls away.</p><div class="quote">“didn't we see this last month?”</div></div>
-    <div class="card"><div class="n">02</div><h3>Repeats and storms</h3><p>The same alarm fires forty times. Fifteen alarms fire for one cause. Each one looks like new work.</p><div class="quote">15 alarms · 1 database failover</div></div>
-    <div class="card"><div class="n">03</div><h3>The map is tribal</h3><p>Which log group, which queue feeds which function, which deploy role touched it: known by whoever was here when it was built.</p><div class="quote">“ask whoever wrote the consumer”</div></div>
-  </div>
+  <div class="tally"><strong>39 min</strong><p>Seven reads and one decision, and none of it written down for the next person. Next month, someone starts from zero.</p></div>
 </section>
 
 <section class="slide idea" id="idea">
   <div class="kicker">The idea</div>
-  <h2>A first investigation for every alarm, <em>within minutes</em>, written down.</h2>
-  <p class="lede">Not an autopilot. A colleague who has already done the reading by the time you open your laptop, and who cannot change a thing.</p>
+  <h2>A colleague who has <em>already done the reading.</em></h2>
+  <p class="lede">Not an autopilot. It does the reading before you open your laptop and leaves the decision to you.</p>
   <div class="cards">
-    <div class="card"><div class="n">READ ONLY</div><h3>Safe by construction</h3><p>No write tools exist. The role grants reads only, with an explicit deny list behind it.</p></div>
-    <div class="card"><div class="n">CODE, THEN MODEL</div><h3>Decide without a model</h3><p>Plain code drops noise, folds storms and counts repeats. The model only sees work worth paying for.</p></div>
-    <div class="card"><div class="n">A PERSON GRADES IT</div><h3>Findings, not opinions</h3><p>Every claim cites the tool call that shows it. A person confirms it or calls it wrong, and that becomes memory.</p></div>
+    <div class="card"><div class="n">01</div><h3>Reads what you would read</h3><p>The alarm, the metric against last week, the logs, what changed, what else is firing, the code.</p></div>
+    <div class="card"><div class="n">02</div><h3>Changes nothing</h3><p>No write tools exist. The role grants reads only, with an explicit deny list behind it.</p></div>
+    <div class="card"><div class="n">03</div><h3>Writes it down</h3><p>Every claim cites the read that shows it. A person grades it, and confirmed findings become memory.</p></div>
   </div>
 </section>
 
-<section class="slide diagram" id="architecture">
-  <header><div><div class="kicker">How it works</div><h2>Two queues, two Lambdas, one table.</h2></div>
-  <p>Alarms land on a queue. Triage decides what deserves an investigation; the investigator runs one and stores the finding.</p></header>
-  <div class="fig"><img class="l" src="architecture-light.svg" alt="Architecture: CloudWatch alarms and optional Datadog monitors feed the alarms queue; triage sends jobs to the work queue; the investigator calls Bedrock and read-only AWS APIs and writes findings to DynamoDB."><img class="d" src="architecture-dark.svg" alt=""></div>
-</section>
-
-<section class="slide diagram" id="triage">
-  <header><div><div class="kicker">Triage · no model</div><h2>Five gates before a single token.</h2></div>
-  <p>The 1,230 scaling alarms never get in. A storm becomes one finding, a repeat becomes a count, and a budget caps the spend.</p></header>
-  <div class="fig"><img class="l" src="triage-flow-light.svg" alt="Triage flow: parse and settle, then gates for opted out, open or cooling down, shared key, storm and budget; stopped signals are recorded on a finding, the rest go to the work queue."><img class="d" src="triage-flow-dark.svg" alt=""></div>
-</section>
-
-<section class="slide diagram" id="investigator">
-  <header><div><div class="kicker">The investigator</div><h2>Facts first, then hypotheses, then reads.</h2></div>
-  <p>Code gathers the alarm, the metric against last week, log patterns and recent changes before the model starts. The model tests hypotheses with read-only tools until it can report.</p></header>
-  <div class="fig"><img class="l" src="investigator-flow-light.svg" alt="Investigator flow: recall reviewed findings, code-only precheck, model loop of reason and read, then redact, store, remember and notify."><img class="d" src="investigator-flow-dark.svg" alt=""></div>
-</section>
-
 <section class="slide" id="finding">
-  <div class="kicker">The same page, 13:02:11 to 13:05:11</div>
+  <div class="kicker">The proof · an example</div>
   <h2>Three minutes later, this is waiting.</h2>
   <div class="finding">
     <div class="panel">
@@ -289,32 +225,58 @@ ul.ev li span { font-family: var(--mono); font-size: 12px; color: var(--accent);
       <div class="hyp"><span class="x">ruled out</span><p>A queue is replaying bad messages</p></div>
       <div class="label">What a person needs to do</div>
       <div class="act"><b>Point the live alias back to version 213</b><div class="cmd">aws lambda update-alias --function-name checkout-api-prod --name live --function-version 213</div></div>
-      <div class="act"><b>Default the currency in pricing.py when a cart has none</b><span class="dim">Commands to copy, never ones it runs.</span></div>
+      <div class="act"><b>Default the currency in pricing.py when a cart has none</b><span class="dim">It wrote the rollback. It cannot run it.</span></div>
     </div>
   </div>
 </section>
 
+<section class="slide diagram" id="architecture">
+  <header><div><div class="kicker">How it reads</div><h2>Small on purpose: two queues, two Lambdas, one table.</h2></div>
+  <p>On demand, with no servers and no VPC, so it costs close to nothing while it waits for the next alarm.</p></header>
+  <div class="fig"><img class="l" src="architecture-light.svg" alt="Architecture: CloudWatch alarms and Datadog monitors feed the alarms queue; triage sends jobs to the work queue; the investigator calls Bedrock and read-only AWS APIs and writes findings to DynamoDB."><img class="d" src="architecture-dark.svg" alt=""></div>
+</section>
+
+<section class="slide" id="triage">
+  <div class="kicker">How it reads · code first · one account, 30 days</div>
+  <h2>Five gates before a single token.</h2>
+  <div class="big">
+    <div><strong>2,446</strong><span>alarm firings</span></div>
+    <div class="real"><strong>34</strong><span>needed a person, about 1 in 70</span></div>
+  </div>
+  <div class="bar" aria-hidden="true"><i style="flex:1230"></i><i style="flex:1062"></i><i style="flex:120"></i><i class="real" style="flex:34;min-width:10px"></i></div>
+  <div class="legend">
+    <div><i></i><b>1,230</b>Scaling alarms. Dropped before they get in.</div>
+    <div><i></i><b>1,062</b>One flapping alarm. A repeat becomes a count.</div>
+    <div><i></i><b>120</b>Another noisy alarm. Folded the same way.</div>
+    <div><i class="real"></i><b>34</b>Worth an investigation. Capped at 10 an hour and 50 a day.</div>
+  </div>
+</section>
+
+<section class="slide diagram" id="investigator">
+  <header><div><div class="kicker">How it reads · then the model</div><h2>Facts first, then hypotheses, then reads.</h2></div>
+  <p>Code has already found the log group, the queue consumers and last week's baseline. The model starts from facts and tests hypotheses with read-only tools.</p></header>
+  <div class="fig"><img class="l" src="investigator-flow-light.svg" alt="Investigator flow: recall reviewed findings, code-only precheck, model loop of reason and read, then redact, store, remember and notify."><img class="d" src="investigator-flow-dark.svg" alt=""></div>
+</section>
+
 <section class="slide" id="safety">
-  <div class="kicker">Safety model</div>
+  <div class="kicker">Changes nothing</div>
   <h2>It cannot break anything. That is the point.</h2>
+  <p class="lede">Even a model fooled by a hostile log line has nowhere to write.</p>
   <div class="grid6">
-    <div class="rule"><b>No write tools</b><span>The role reads. Its only writes are its own table, its two queues and one topic, with a deny list behind them.</span></div>
-    <div class="rule"><b>Tool output is data</b><span>A hostile log line can steer the model. A steered model with nowhere to write is harmless.</span></div>
-    <div class="rule"><b>No secrets</b><span>No tool returns secret values, object bodies or message payloads. A test fails if the code calls anything else.</span></div>
-    <div class="rule"><b>Redacted twice</b><span>Credential shapes are stripped before the model reads a result and again before a finding is stored.</span></div>
-    <div class="rule"><b>Severity only goes up</b><span>The floor comes from the alarm's tag. The model can raise it, never lower it.</span></div>
-    <div class="rule"><b>Budgets</b><span>Hourly and daily investigation caps, a token budget per run and per day, alarms on tokens, a cost budget.</span></div>
+    <div class="rule"><b>No write tools</b><span>The role reads. Its only writes are its own table, its queues and one topic, with a deny list behind them.</span></div>
+    <div class="rule"><b>Tool output is data</b><span>Logs and API results are evidence to weigh, never instructions to follow.</span></div>
+    <div class="rule"><b>No secrets</b><span>No tool returns secret values or payloads, and credential shapes are redacted twice, before the model and before storage.</span></div>
   </div>
 </section>
 
 <section class="slide diagram" id="accounts">
-  <header><div><div class="kicker">Many accounts</div><h2>One agent for the whole organization.</h2></div>
-  <p>Member accounts forward ALARM events to a central bus. Each job assumes that account's read-only role, for that job alone.</p></header>
+  <header><div><div class="kicker">Changes nothing · in any account</div><h2>One agent for the whole organization.</h2></div>
+  <p>Each member account adds one read-only role, assumed for one job at a time. The agent never writes into a member account.</p></header>
   <div class="fig"><img class="l" src="multi-account-light.svg" alt="Multi-account: member accounts forward alarms to a central event bus in the tooling account; triage and each investigation assume a read-only role in the member account."><img class="d" src="multi-account-dark.svg" alt=""></div>
 </section>
 
 <section class="slide" id="loop">
-  <div class="kicker">The human in the loop</div>
+  <div class="kicker">Writes it down · didn't we see this last month?</div>
   <h2>A person closes every finding, and the agent remembers.</h2>
   <div class="loop">
     <svg viewBox="0 0 640 520" role="img" aria-label="Alarm, investigate, finding, person reviews, and back to the next investigation with reviewed findings as memory">
@@ -335,33 +297,48 @@ ul.ev li span { font-family: var(--mono); font-size: 12px; color: var(--accent);
       <text x="320" y="455" text-anchor="middle" font-size="20" font-weight="650">Finding</text>
       <rect x="30" y="232" width="180" height="56" rx="12" style="fill:var(--accent-soft);stroke:var(--accent);stroke-width:2"/>
       <text x="120" y="267" text-anchor="middle" font-size="20" font-weight="650">Person reviews</text>
-      <text x="320" y="240" text-anchor="middle" font-size="16" style="fill:var(--muted)">up to 3 reviewed findings</text>
+      <text x="320" y="240" text-anchor="middle" font-size="16" style="fill:var(--muted)">reviewed findings</text>
       <text x="320" y="264" text-anchor="middle" font-size="16" style="fill:var(--muted)">on the same resource</text>
       <text x="320" y="288" text-anchor="middle" font-size="16" style="fill:var(--muted)">come back as memory</text>
     </svg>
     <div class="res">
-      <div><code>confirmed</code><p>It was right. The next investigation of this resource starts from it.</p></div>
-      <div><code>false_positive</code><p>The alarm fired but nothing was wrong. Also memory, so it stops chasing ghosts.</p></div>
-      <div><code>wrong</code><p>It got the cause wrong. Needs a note, and becomes an eval case, never a prompt.</p></div>
-      <div><code>dismissed</code><p>For a finding that reported no cause at all.</p></div>
+      <div><b>Right</b><p>Confirmed, or a false alarm called out. Either way it becomes memory, and the next investigation of this resource starts from it.</p></div>
+      <div><b>Wrong</b><p>It becomes a test case for the next prompt or model. Never memory, so a mistake is not repeated as fact.</p></div>
     </div>
   </div>
 </section>
 
+<section class="slide" id="sources">
+  <div class="kicker">Next</div>
+  <h2>Anything that can page you can get a first look.</h2>
+  <div class="tiles">
+    <div class="tile"><b>CloudWatch alarms</b><code>checkout-api-errors-prod<br>Errors ≥ 1 for 1 datapoint</code></div>
+    <div class="tile"><b>Datadog monitors</b><code>[Warn] p99 latency &gt; 2s<br>service:web-store env:prod</code></div>
+    <div class="tile"><b>Amazon Inspector</b><code>CVE in base image · HIGH<br>found in 14 container images</code></div>
+    <div class="tile"><b>GuardDuty</b><code>Recon:EC2/PortProbeUnprotectedPort<br>severity 5.0</code></div>
+    <div class="tile"><b>Security Hub</b><code>S3.8 Block Public Access<br>should be enabled · FAILED</code></div>
+    <div class="tile"><b>AWS Health</b><code>Scheduled maintenance · RDS<br>3 instances · next Tuesday</code></div>
+    <div class="tile"><b>Cost Anomaly Detection</b><code>+$412 per day<br>in one service since Thursday</code></div>
+    <div class="tile"><b>Synthetics canaries</b><code>login-flow failed<br>3 of 3 runs · us-east-1</code></div>
+    <div class="tile"><b>AWS Config</b><code>required-tags NON_COMPLIANT<br>61 resources</code></div>
+  </div>
+  <p class="footnote">Nine consoles, nine formats, one person on call. The same read, test and write-down loop fits all of them.</p>
+</section>
+
 <section class="slide start" id="start">
-  <div class="kicker">Getting started</div>
-  <h1>Fork it. Deploy one module. Wait for the next alarm.</h1>
+  <div class="kicker">The ask</div>
+  <h1>Fork it. Deploy one module. Grade what it finds.</h1>
   <div class="how">
-    <div><b>Fork</b><span>One Python package, <code>devops_agent/</code>, with the tests that hold its safety rules.</span></div>
-    <div><b>Apply</b><span><code>terraform/</code> creates the Lambdas, queues, table, rule, read-only role and the Bedrock budgets.</span></div>
-    <div><b>Review</b><span>Findings land in DynamoDB. Close them with any tool you like; reviewed ones become memory.</span></div>
+    <div><b>Start small</b><span>One dev account, one <code>terraform/</code> module: two Lambdas, two queues, a table and a read-only role.</span></div>
+    <div><b>Grade it</b><span>Close every finding as right or wrong. Widen it to more accounts when most are confirmed.</span></div>
+    <div><b>Own it</b><span>It is a repo, not a vendor. The prompt, the tools, the deny list and the test cases are yours to change.</span></div>
   </div>
   <p class="url">github.com/bkovaluk/devops-agent</p>
 </section>
 
 </div>
 </div>
-<nav class="nav" aria-label="Slides"><button id="prev" aria-label="Previous slide">←</button><output id="count">01 / 14</output><button id="next" aria-label="Next slide">→</button></nav>
+<nav class="nav" aria-label="Slides"><button id="prev" aria-label="Previous slide">←</button><output id="count">01 / 12</output><button id="next" aria-label="Next slide">→</button></nav>
 
 <script>
 (() => {
