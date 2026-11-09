@@ -1,0 +1,407 @@
+<meta charset="utf-8">
+<title>Why devops-agent</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@400;600&family=Mona+Sans:wght@400..800&display=swap">
+<style>
+:root {
+  --bg: #f7f8fb; --panel: #ffffff; --sunk: #eef0f5; --fg: #111524; --muted: #5b6478;
+  --faint: #8a94a8; --line: #dde1ea; --accent: #b7791f; --accent-soft: #f7ebd2;
+  --hot: #c2410c; --sans: "Mona Sans", ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "Martian Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0e18; --panel: #121726; --sunk: #0f1320; --fg: #e6ecf6; --muted: #93a0b8;
+    --faint: #66728a; --line: #232a3d; --accent: #f5b544; --accent-soft: #2a2212;
+    --hot: #f08a5d; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0e18; --panel: #121726; --sunk: #0f1320; --fg: #e6ecf6; --muted: #93a0b8;
+  --faint: #66728a; --line: #232a3d; --accent: #f5b544; --accent-soft: #2a2212;
+  --hot: #f08a5d; color-scheme: dark;
+}
+
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); overflow: hidden;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.deck { position: fixed; inset: 0; display: grid; place-items: center; }
+.stage { width: 1600px; height: 900px; position: relative; transform: scale(var(--s, 1)); transform-origin: center; flex: none; }
+.progress { position: fixed; top: env(safe-area-inset-top, 0px); left: 0; height: 3px; background: var(--accent); transition: width .35s ease; z-index: 5; }
+
+.slide { position: absolute; inset: 0; padding: 72px 96px 88px; display: flex; flex-direction: column; gap: 28px;
+  opacity: 0; visibility: hidden; transform: translateY(12px); transition: opacity .35s ease, transform .35s ease, visibility 0s .35s; }
+.slide.on { opacity: 1; visibility: visible; transform: none; transition: opacity .35s ease, transform .35s ease; }
+@media (prefers-reduced-motion: reduce) { .slide, .slide.on, .progress { transition: none; transform: none; } }
+
+.kicker { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+h1, h2 { margin: 0; text-wrap: balance; font-weight: 750; letter-spacing: -.02em; }
+h1 { font-size: 92px; line-height: .98; max-width: 1250px; }
+h2 { font-size: 58px; line-height: 1.04; max-width: 1300px; }
+.lede { font-size: 27px; line-height: 1.45; color: var(--muted); max-width: 1050px; margin: 0; }
+.dim { color: var(--muted); }
+.grow { flex: 1; min-height: 0; }
+
+/* title */
+.title { justify-content: center; gap: 36px; }
+.title h1 em { font-style: normal; color: var(--accent); }
+.title .meta { display: flex; gap: 40px; font-family: var(--mono); font-size: 15px; color: var(--faint); }
+
+/* sources */
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; display: flex; flex-direction: column; gap: 10px; position: relative; }
+.tile b { font-size: 21px; font-weight: 650; }
+.tile code { font-family: var(--mono); font-size: 13.5px; line-height: 1.5; color: var(--muted); }
+.tile.reads { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.tile.reads::after { content: "reads today"; position: absolute; top: 18px; right: 18px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+.footnote { font-size: 20px; color: var(--muted); margin: 0; }
+
+/* noise */
+.big { display: flex; gap: 72px; align-items: baseline; }
+.big div { display: flex; flex-direction: column; gap: 6px; }
+.big strong { font-size: 120px; font-weight: 780; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+.big span { font-size: 20px; color: var(--muted); }
+.big .real strong { color: var(--accent); }
+.bar { display: flex; height: 72px; border-radius: 10px; overflow: hidden; gap: 3px; margin-top: 40px; }
+.bar i, .legend i { display: block; background: var(--faint); }
+.bar i:nth-child(1), .legend div:nth-child(1) i { opacity: .55; }
+.bar i:nth-child(2), .legend div:nth-child(2) i { opacity: .35; }
+.bar i:nth-child(3), .legend div:nth-child(3) i { opacity: .2; }
+.bar i.real, .legend i.real { background: var(--accent); opacity: 1; }
+.legend { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; font-size: 18px; line-height: 1.4; color: var(--muted); }
+.legend div { display: grid; grid-template-columns: 14px 1fr; column-gap: 12px; align-content: start; }
+#noise, #zero, #idea, #finding, #safety { justify-content: center; }
+.legend i { width: 14px; height: 14px; border-radius: 3px; margin-top: 4px; grid-row: span 2; }
+.legend div:last-child, .legend div:last-child b { color: var(--accent); }
+.legend b { display: block; color: var(--fg); font-family: var(--mono); font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+
+/* manual */
+.timeline { display: grid; grid-template-columns: repeat(9, 1fr); position: relative; margin-top: auto; }
+.timeline::before { content: ""; position: absolute; left: 0; right: 0; top: 46px; height: 2px; background: var(--line); }
+.step { display: flex; flex-direction: column; gap: 14px; padding-right: 14px; position: relative; }
+.step time { font-family: var(--mono); font-size: 16px; color: var(--faint); height: 26px; }
+.step .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--bg); border: 2px solid var(--faint); position: relative; z-index: 1; }
+.step p { margin: 0; font-size: 22px; line-height: 1.35; }
+.step p small { display: block; font-family: var(--mono); font-size: 14px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+.step.first .dot { background: var(--hot); border-color: var(--hot); }
+.step.last .dot { background: var(--accent); border-color: var(--accent); }
+.tally { display: flex; gap: 48px; align-items: center; border-top: 1px solid var(--line); padding-top: 28px; margin-top: auto; }
+.tally strong { font-size: 64px; font-weight: 780; letter-spacing: -.03em; white-space: nowrap; }
+.tally p { margin: 0; font-size: 22px; color: var(--muted); max-width: 900px; line-height: 1.45; }
+
+/* cards */
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 32px; display: flex; flex-direction: column; gap: 14px; }
+.card .n { font-family: var(--mono); font-size: 14px; color: var(--accent); letter-spacing: .1em; }
+.card h3 { margin: 0; font-size: 30px; line-height: 1.15; font-weight: 700; text-wrap: balance; }
+.card p { margin: 0; font-size: 19px; line-height: 1.5; color: var(--muted); }
+.quote { font-family: var(--mono); font-size: 15px; color: var(--muted); background: var(--sunk); border-radius: 8px; padding: 12px 14px; line-height: 1.55; margin-top: auto; }
+.idea h2 em { font-style: normal; color: var(--accent); }
+.grid6 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px 48px; margin-top: 12px; }
+.rule { border-top: 2px solid var(--line); padding-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+.rule b { font-size: 26px; font-weight: 680; }
+.rule span { font-size: 19px; line-height: 1.5; color: var(--muted); }
+.rule:first-child { border-top-color: var(--accent); }
+
+/* diagrams */
+.diagram { gap: 18px; padding-top: 56px; }
+.diagram header { display: flex; justify-content: space-between; align-items: end; gap: 48px; }
+.diagram header p { margin: 0; font-size: 21px; line-height: 1.45; color: var(--muted); max-width: 640px; }
+.diagram h2 { font-size: 46px; }
+.fig { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+.fig img { max-width: 100%; max-height: 100%; display: block; }
+.fig .d { display: none; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .fig .l { display: none; } :root:not([data-theme="light"]) .fig .d { display: block; } }
+:root[data-theme="dark"] .fig .l { display: none; }
+:root[data-theme="dark"] .fig .d { display: block; }
+
+/* finding */
+.finding { display: grid; grid-template-columns: 1.1fr 1fr; gap: 28px; align-items: start; margin-top: 8px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 26px 30px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.head { display: flex; justify-content: space-between; gap: 16px; font-family: var(--mono); font-size: 14px; color: var(--muted); }
+.head b { color: var(--fg); font-weight: 600; }
+.cause { font-size: 25px; line-height: 1.35; font-weight: 600; margin: 0; }
+.chips { display: flex; gap: 10px; flex-wrap: wrap; }
+.chip { font-family: var(--mono); font-size: 13px; padding: 6px 10px; border-radius: 6px; background: var(--sunk); color: var(--muted); }
+.chip b { color: var(--fg); font-weight: 600; }
+.label { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+ul.ev { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+ul.ev li { display: grid; grid-template-columns: 72px 1fr; gap: 12px; font-size: 17px; line-height: 1.4; }
+ul.ev li span { font-family: var(--mono); font-size: 12px; color: var(--accent); padding-top: 4px; text-transform: uppercase; letter-spacing: .08em; }
+.hyp { display: grid; grid-template-columns: 96px 1fr; gap: 10px; font-size: 17px; line-height: 1.4; }
+.hyp span { font-family: var(--mono); font-size: 12px; padding-top: 4px; text-transform: uppercase; letter-spacing: .08em; }
+.hyp .y { color: var(--accent); }
+.hyp .x { color: var(--faint); }
+.hyp .x + p { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+.hyp p { margin: 0; }
+.cmd { font-family: var(--mono); font-size: 13px; line-height: 1.55; background: var(--sunk); border-radius: 8px; padding: 12px 14px; color: var(--fg); overflow-wrap: anywhere; }
+.act { display: flex; flex-direction: column; gap: 8px; font-size: 17px; }
+.act b { font-weight: 600; }
+
+/* loop */
+.loop { display: grid; grid-template-columns: 600px 1fr; gap: 72px; align-items: center; flex: 1; min-height: 0; }
+.loop svg { width: 100%; height: auto; max-height: 560px; }
+.loop svg text { font-family: var(--sans); fill: var(--fg); }
+.res { display: flex; flex-direction: column; gap: 18px; }
+.res div { display: grid; grid-template-columns: 210px 1fr; gap: 20px; align-items: baseline; border-top: 1px solid var(--line); padding-top: 16px; }
+.res code { font-family: var(--mono); font-size: 17px; color: var(--accent); }
+.res p { margin: 0; font-size: 19px; line-height: 1.45; color: var(--muted); }
+
+/* start */
+.start { justify-content: center; gap: 44px; }
+.how { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+.how div { border-top: 2px solid var(--accent); padding-top: 18px; display: flex; flex-direction: column; gap: 8px; }
+.how b { font-size: 26px; }
+.how span { font-size: 19px; color: var(--muted); line-height: 1.5; }
+.how code { font-family: var(--mono); font-size: 15px; color: var(--fg); }
+.start .url { font-family: var(--mono); font-size: 20px; color: var(--accent); margin: 0; }
+
+/* chrome */
+.nav { position: fixed; right: max(20px, env(safe-area-inset-right, 0px)); bottom: max(16px, env(safe-area-inset-bottom, 0px)); display: flex; align-items: center; gap: 8px; z-index: 5; font-family: var(--mono); font-size: 13px; color: var(--faint); }
+.nav button { all: unset; cursor: pointer; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font-size: 16px; }
+.nav button:hover { border-color: var(--accent); }
+.nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.nav output { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
+</style>
+
+<div class="progress" id="progress"></div>
+<div class="deck">
+<div class="stage" id="stage">
+
+<section class="slide title" id="title">
+  <div class="kicker">devops-agent</div>
+  <h1>Every alarm deserves a first look. <em>Nobody has time to give it one.</em></h1>
+  <p class="lede">A read-only investigator that reads the alarm, its metrics, its logs and what changed, then writes down what it found. It takes about three minutes, and it never touches anything.</p>
+  <div class="meta"><span>Press → to begin</span><span>Amazon Bedrock · Lambda · EventBridge · DynamoDB</span></div>
+</section>
+
+<section class="slide" id="sources">
+  <div class="kicker">The setup</div>
+  <h2>Count the things that can page you.</h2>
+  <div class="tiles">
+    <div class="tile reads"><b>CloudWatch alarms</b><code>checkout-api-errors-prod<br>Errors ≥ 1 for 1 datapoint</code></div>
+    <div class="tile reads"><b>Datadog monitors</b><code>[Warn] p99 latency &gt; 2s<br>service:web-store env:prod</code></div>
+    <div class="tile"><b>Amazon Inspector</b><code>CVE in base image · HIGH<br>found in 14 container images</code></div>
+    <div class="tile"><b>GuardDuty</b><code>Recon:EC2/PortProbeUnprotectedPort<br>severity 5.0</code></div>
+    <div class="tile"><b>Security Hub</b><code>S3.8 Block Public Access<br>should be enabled · FAILED</code></div>
+    <div class="tile"><b>AWS Health</b><code>Scheduled maintenance · RDS<br>3 instances · next Tuesday</code></div>
+    <div class="tile"><b>Cost Anomaly Detection</b><code>+$412 per day<br>in one service since Thursday</code></div>
+    <div class="tile"><b>Synthetics canaries</b><code>login-flow failed<br>3 of 3 runs · us-east-1</code></div>
+    <div class="tile"><b>AWS Config</b><code>required-tags NON_COMPLIANT<br>61 resources</code></div>
+  </div>
+  <p class="footnote">Nine consoles, nine formats, one person on call. The agent starts with the two that wake people up.</p>
+</section>
+
+<section class="slide" id="noise">
+  <div class="kicker">One production account · 30 days</div>
+  <h2>Most of it is noise. Some of it is not.</h2>
+  <div class="big">
+    <div><strong>2,446</strong><span>times an alarm went into ALARM</span></div>
+    <div><strong>24</strong><span>alarms did all of that</span></div>
+    <div class="real"><strong>34</strong><span>needed a person, about 1 in 70</span></div>
+  </div>
+  <div class="bar" aria-hidden="true"><i style="flex:1230"></i><i style="flex:1062"></i><i style="flex:120"></i><i class="real" style="flex:34;min-width:10px"></i></div>
+  <div class="legend">
+    <div><i></i><b>1,230</b>Target tracking scaling alarms: machines talking to machines</div>
+    <div><i></i><b>1,062</b>One p99 latency alarm on 1 of 1 datapoint, flapping all month</div>
+    <div><i></i><b>120</b>Another alarm on 1 of 1 datapoint</div>
+    <div><i class="real"></i><b>34</b>Real problems a person had to look at</div>
+  </div>
+</section>
+
+<section class="slide" id="manual">
+  <div class="kicker">What a person does with one of the 34</div>
+  <h2>Thirty-nine minutes of reading, then a guess in a chat thread.</h2>
+  <div class="timeline">
+    <div class="step first"><time>13:02</time><div class="dot"></div><p>Paged<small>checkout-api-errors-prod</small></p></div>
+    <div class="step"><time>13:06</time><div class="dot"></div><p>Open the alarm<small>1 datapoint. Is it real?</small></p></div>
+    <div class="step"><time>13:09</time><div class="dot"></div><p>Graph the metric<small>against last Tuesday</small></p></div>
+    <div class="step"><time>13:14</time><div class="dot"></div><p>Find the log group<small>which one holds this?</small></p></div>
+    <div class="step"><time>13:19</time><div class="dot"></div><p>Logs Insights<small>KeyError: 'currency'</small></p></div>
+    <div class="step"><time>13:26</time><div class="dot"></div><p>CloudTrail<small>deploy at 12:58</small></p></div>
+    <div class="step"><time>13:31</time><div class="dot"></div><p>Other alarms?<small>same function</small></p></div>
+    <div class="step"><time>13:38</time><div class="dot"></div><p>Read the code<small>pricing.py line 91</small></p></div>
+    <div class="step last"><time>13:41</time><div class="dot"></div><p>“Roll back to 213?”<small>posted in chat</small></p></div>
+  </div>
+  <div class="tally"><strong>39 min</strong><p>Every step is a read. None of it needed judgement until the last one, and none of it was written down anywhere the next person will find.</p></div>
+</section>
+
+<section class="slide" id="zero">
+  <div class="kicker">And the next time</div>
+  <h2>We start from zero, every time.</h2>
+  <div class="cards">
+    <div class="card"><div class="n">01</div><h3>The context evaporates</h3><p>What was checked, what was ruled out and why lives in one person's head and a chat thread that scrolls away.</p><div class="quote">“didn't we see this last month?”</div></div>
+    <div class="card"><div class="n">02</div><h3>Repeats and storms</h3><p>The same alarm fires forty times. Fifteen alarms fire for one cause. Each one looks like new work.</p><div class="quote">15 alarms · 1 database failover</div></div>
+    <div class="card"><div class="n">03</div><h3>The map is tribal</h3><p>Which log group, which queue feeds which function, which deploy role touched it: known by whoever was here when it was built.</p><div class="quote">“ask whoever wrote the consumer”</div></div>
+  </div>
+</section>
+
+<section class="slide idea" id="idea">
+  <div class="kicker">The idea</div>
+  <h2>A first investigation for every alarm, <em>within minutes</em>, written down.</h2>
+  <p class="lede">Not an autopilot. A colleague who has already done the reading by the time you open your laptop, and who cannot change a thing.</p>
+  <div class="cards">
+    <div class="card"><div class="n">READ ONLY</div><h3>Safe by construction</h3><p>No write tools exist. The role grants reads only, with an explicit deny list behind it.</p></div>
+    <div class="card"><div class="n">CODE, THEN MODEL</div><h3>Decide without a model</h3><p>Plain code drops noise, folds storms and counts repeats. The model only sees work worth paying for.</p></div>
+    <div class="card"><div class="n">A PERSON GRADES IT</div><h3>Findings, not opinions</h3><p>Every claim cites the tool call that shows it. A person confirms it or calls it wrong, and that becomes memory.</p></div>
+  </div>
+</section>
+
+<section class="slide diagram" id="architecture">
+  <header><div><div class="kicker">How it works</div><h2>Two queues, two Lambdas, one table.</h2></div>
+  <p>Alarms land on a queue. Triage decides what deserves an investigation; the investigator runs one and stores the finding.</p></header>
+  <div class="fig"><img class="l" src="architecture-light.svg" alt="Architecture: CloudWatch alarms and optional Datadog monitors feed the alarms queue; triage sends jobs to the work queue; the investigator calls Bedrock and read-only AWS APIs and writes findings to DynamoDB."><img class="d" src="architecture-dark.svg" alt=""></div>
+</section>
+
+<section class="slide diagram" id="triage">
+  <header><div><div class="kicker">Triage · no model</div><h2>Five gates before a single token.</h2></div>
+  <p>The 1,230 scaling alarms never get in. A storm becomes one finding, a repeat becomes a count, and a budget caps the spend.</p></header>
+  <div class="fig"><img class="l" src="triage-flow-light.svg" alt="Triage flow: parse and settle, then gates for opted out, open or cooling down, shared key, storm and budget; stopped signals are recorded on a finding, the rest go to the work queue."><img class="d" src="triage-flow-dark.svg" alt=""></div>
+</section>
+
+<section class="slide diagram" id="investigator">
+  <header><div><div class="kicker">The investigator</div><h2>Facts first, then hypotheses, then reads.</h2></div>
+  <p>Code gathers the alarm, the metric against last week, log patterns and recent changes before the model starts. The model tests hypotheses with read-only tools until it can report.</p></header>
+  <div class="fig"><img class="l" src="investigator-flow-light.svg" alt="Investigator flow: recall reviewed findings, code-only precheck, model loop of reason and read, then redact, store, remember and notify."><img class="d" src="investigator-flow-dark.svg" alt=""></div>
+</section>
+
+<section class="slide" id="finding">
+  <div class="kicker">The same page, 13:02:11 to 13:05:11</div>
+  <h2>Three minutes later, this is waiting.</h2>
+  <div class="finding">
+    <div class="panel">
+      <div class="head"><span><b>checkout-api-errors-prod</b> · prod</span><span>alarm 13:02:11 · finding 13:05:11</span></div>
+      <p class="cause">Version 214 reads cart['currency'] without a default; older carts have no such key.</p>
+      <div class="chips"><span class="chip">confidence <b>high</b></span><span class="chip">effort <b>low</b></span><span class="chip">severity <b>high</b></span></div>
+      <div class="label">Evidence</div>
+      <ul class="ev">
+        <li><span>metric</span>Errors went from 0 to 37 per minute at 13:01 UTC.</li>
+        <li><span>log</span>KeyError: 'currency' at pricing.py line 91 in all 20 recent error lines.</li>
+        <li><span>change</span>UpdateFunctionCode and PublishVersion 214 at 12:58 UTC by the deploy role.</li>
+        <li><span>code</span>pricing.py line 91 reads cart['currency'] with no default.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <div class="label">Hypotheses it weighed</div>
+      <div class="hyp"><span class="y">likely</span><p>Version 214 broke pricing for carts without a currency</p></div>
+      <div class="hyp"><span class="x">ruled out</span><p>A downstream dependency is failing</p></div>
+      <div class="hyp"><span class="x">ruled out</span><p>A queue is replaying bad messages</p></div>
+      <div class="label">What a person needs to do</div>
+      <div class="act"><b>Point the live alias back to version 213</b><div class="cmd">aws lambda update-alias --function-name checkout-api-prod --name live --function-version 213</div></div>
+      <div class="act"><b>Default the currency in pricing.py when a cart has none</b><span class="dim">Commands to copy, never ones it runs.</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="safety">
+  <div class="kicker">Safety model</div>
+  <h2>It cannot break anything. That is the point.</h2>
+  <div class="grid6">
+    <div class="rule"><b>No write tools</b><span>The role reads. Its only writes are its own table, its two queues and one topic, with a deny list behind them.</span></div>
+    <div class="rule"><b>Tool output is data</b><span>A hostile log line can steer the model. A steered model with nowhere to write is harmless.</span></div>
+    <div class="rule"><b>No secrets</b><span>No tool returns secret values, object bodies or message payloads. A test fails if the code calls anything else.</span></div>
+    <div class="rule"><b>Redacted twice</b><span>Credential shapes are stripped before the model reads a result and again before a finding is stored.</span></div>
+    <div class="rule"><b>Severity only goes up</b><span>The floor comes from the alarm's tag. The model can raise it, never lower it.</span></div>
+    <div class="rule"><b>Budgets</b><span>Hourly and daily investigation caps, a token budget per run and per day, alarms on tokens, a cost budget.</span></div>
+  </div>
+</section>
+
+<section class="slide diagram" id="accounts">
+  <header><div><div class="kicker">Many accounts</div><h2>One agent for the whole organization.</h2></div>
+  <p>Member accounts forward ALARM events to a central bus. Each job assumes that account's read-only role, for that job alone.</p></header>
+  <div class="fig"><img class="l" src="multi-account-light.svg" alt="Multi-account: member accounts forward alarms to a central event bus in the tooling account; triage and each investigation assume a read-only role in the member account."><img class="d" src="multi-account-dark.svg" alt=""></div>
+</section>
+
+<section class="slide" id="loop">
+  <div class="kicker">The human in the loop</div>
+  <h2>A person closes every finding, and the agent remembers.</h2>
+  <div class="loop">
+    <svg viewBox="0 0 640 520" role="img" aria-label="Alarm, investigate, finding, person reviews, and back to the next investigation with reviewed findings as memory">
+      <defs><marker id="lh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--faint)"/></marker></defs>
+      <circle cx="320" cy="260" r="190" style="fill:none;stroke:var(--line);stroke-width:2;stroke-dasharray:4 8"/>
+      <g style="stroke:var(--faint);stroke-width:2;fill:none">
+        <path d="M398 88 A190 190 0 0 1 498 222" marker-end="url(#lh)"/>
+        <path d="M498 298 A190 190 0 0 1 398 432" marker-end="url(#lh)"/>
+        <path d="M242 432 A190 190 0 0 1 142 298" marker-end="url(#lh)"/>
+        <path d="M142 222 A190 190 0 0 1 242 88" marker-end="url(#lh)"/>
+      </g>
+      <rect x="245" y="44" width="150" height="56" rx="12" style="fill:var(--panel);stroke:var(--hot);stroke-width:2"/>
+      <text x="320" y="79" text-anchor="middle" font-size="20" font-weight="650">Next alarm</text>
+      <text x="150" y="140" text-anchor="middle" font-size="15" font-weight="600" style="fill:var(--accent)">memory</text>
+      <rect x="430" y="232" width="180" height="56" rx="12" style="fill:var(--panel);stroke:var(--line);stroke-width:2"/>
+      <text x="520" y="267" text-anchor="middle" font-size="20" font-weight="650">Investigate</text>
+      <rect x="245" y="420" width="150" height="56" rx="12" style="fill:var(--panel);stroke:var(--line);stroke-width:2"/>
+      <text x="320" y="455" text-anchor="middle" font-size="20" font-weight="650">Finding</text>
+      <rect x="30" y="232" width="180" height="56" rx="12" style="fill:var(--accent-soft);stroke:var(--accent);stroke-width:2"/>
+      <text x="120" y="267" text-anchor="middle" font-size="20" font-weight="650">Person reviews</text>
+      <text x="320" y="240" text-anchor="middle" font-size="16" style="fill:var(--muted)">up to 3 reviewed findings</text>
+      <text x="320" y="264" text-anchor="middle" font-size="16" style="fill:var(--muted)">on the same resource</text>
+      <text x="320" y="288" text-anchor="middle" font-size="16" style="fill:var(--muted)">come back as memory</text>
+    </svg>
+    <div class="res">
+      <div><code>confirmed</code><p>It was right. The next investigation of this resource starts from it.</p></div>
+      <div><code>false_positive</code><p>The alarm fired but nothing was wrong. Also memory, so it stops chasing ghosts.</p></div>
+      <div><code>wrong</code><p>It got the cause wrong. Needs a note, and becomes an eval case, never a prompt.</p></div>
+      <div><code>dismissed</code><p>For a finding that reported no cause at all.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide start" id="start">
+  <div class="kicker">Getting started</div>
+  <h1>Fork it. Deploy one module. Wait for the next alarm.</h1>
+  <div class="how">
+    <div><b>Fork</b><span>One Python package, <code>devops_agent/</code>, with the tests that hold its safety rules.</span></div>
+    <div><b>Apply</b><span><code>terraform/</code> creates the Lambdas, queues, table, rule, read-only role and the Bedrock budgets.</span></div>
+    <div><b>Review</b><span>Findings land in DynamoDB. Close them with any tool you like; reviewed ones become memory.</span></div>
+  </div>
+  <p class="url">github.com/bkovaluk/devops-agent</p>
+</section>
+
+</div>
+</div>
+<nav class="nav" aria-label="Slides"><button id="prev" aria-label="Previous slide">←</button><output id="count">01 / 14</output><button id="next" aria-label="Next slide">→</button></nav>
+
+<script>
+(() => {
+  const stage = document.getElementById("stage");
+  const slides = [...stage.querySelectorAll(".slide")];
+  const count = document.getElementById("count");
+  const bar = document.getElementById("progress");
+  const pad = n => String(n).padStart(2, "0");
+  let i = Math.max(0, slides.findIndex(s => "#" + s.id === location.hash));
+
+  function fit() {
+    stage.style.setProperty("--s", Math.min(innerWidth / 1600, innerHeight / 900).toFixed(4));
+  }
+  function show(n) {
+    i = Math.min(slides.length - 1, Math.max(0, n));
+    slides.forEach((s, k) => { s.classList.toggle("on", k === i); s.inert = k !== i; });
+    count.textContent = pad(i + 1) + " / " + pad(slides.length);
+    bar.style.width = ((i + 1) / slides.length * 100) + "%";
+    try { history.replaceState(null, "", "#" + slides[i].id); } catch (e) {}
+  }
+  addEventListener("resize", fit);
+  addEventListener("hashchange", () => {
+    const k = slides.findIndex(s => "#" + s.id === location.hash);
+    if (k >= 0 && k !== i) show(k);
+  });
+  addEventListener("keydown", e => {
+    if (["ArrowRight", "PageDown", " ", "Enter"].includes(e.key)) { e.preventDefault(); show(i + 1); }
+    else if (["ArrowLeft", "PageUp", "Backspace"].includes(e.key)) { e.preventDefault(); show(i - 1); }
+    else if (e.key === "Home") show(0);
+    else if (e.key === "End") show(slides.length - 1);
+  });
+  document.getElementById("prev").onclick = () => show(i - 1);
+  document.getElementById("next").onclick = () => show(i + 1);
+  let x0 = null;
+  addEventListener("touchstart", e => { x0 = e.touches[0].clientX; }, { passive: true });
+  addEventListener("touchend", e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0; x0 = null;
+    if (Math.abs(dx) > 40) show(i + (dx < 0 ? 1 : -1));
+  });
+  fit(); show(i);
+})();
+</script>
